@@ -8,6 +8,13 @@
 // ============================================================
 
 window.initEventBindingsA = async function(state, db) {
+    // 参考并改写自 yxlforever/YYY：
+    // https://github.com/yxlforever/YYY/commit/fb27ca3fafb9a38f6f9f91daabd457a290f0be19
+    // 用途：避免同一页面生命周期内重复创建数百个事件监听器和样式节点。
+    // 不改变现有按钮、入口、设置项与事件行为。
+    if (window.__initEventBindingsAReady) return;
+    window.__initEventBindingsAReady = true;
+
     // 从 window 获取全局变量
     const audioPlayer = window.audioPlayer;
     const musicState = window.musicState;
@@ -744,22 +751,142 @@ window.initEventBindingsA = async function(state, db) {
     }
 
 
+    function showWorldBookExportSelectionModal(books, categories) {
+      return new Promise(resolve => {
+        const modal = document.getElementById('custom-modal-overlay');
+        const modalTitle = document.getElementById('custom-modal-title');
+        const modalBody = document.getElementById('custom-modal-body');
+        const modalFooter = document.querySelector('#custom-modal .custom-modal-footer');
+
+        if (!modal || !modalTitle || !modalBody || !modalFooter) {
+          resolve(books);
+          return;
+        }
+
+        modalTitle.textContent = '选择要导出的世界书';
+        modalBody.innerHTML = `
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
+            <span id="world-book-export-count" style="font-size:13px; color:var(--text-secondary, #666);"></span>
+            <div style="display:flex; gap:6px;">
+              <button type="button" id="select-all-world-books-for-export" style="padding:5px 9px; border:1px solid var(--border-color, #ddd); border-radius:7px; background:var(--secondary-bg, #fff); color:var(--text-color, #333); cursor:pointer;">全选</button>
+              <button type="button" id="deselect-all-world-books-for-export" style="padding:5px 9px; border:1px solid var(--border-color, #ddd); border-radius:7px; background:var(--secondary-bg, #fff); color:var(--text-color, #333); cursor:pointer;">取消全选</button>
+            </div>
+          </div>
+          <div id="world-book-export-list" style="max-height:48vh; overflow-y:auto; border:1px solid var(--border-color, #e5e5e5); border-radius:9px; text-align:left;"></div>
+        `;
+
+        const categoryNameById = new Map(categories.map(category => [String(category.id), category.name]));
+        const list = document.getElementById('world-book-export-list');
+        const count = document.getElementById('world-book-export-count');
+        const checkboxes = [];
+
+        books.forEach((book, index) => {
+          const row = document.createElement('label');
+          row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:10px 11px; cursor:pointer; border-bottom:1px solid var(--border-color, #eee);';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = true;
+          checkbox.dataset.bookIndex = String(index);
+          checkbox.style.cssText = 'width:18px; height:18px; padding:0; margin:0; flex:0 0 auto; cursor:pointer;';
+          checkboxes.push(checkbox);
+
+          const text = document.createElement('span');
+          text.style.cssText = 'display:flex; flex-direction:column; min-width:0; flex:1;';
+
+          const name = document.createElement('span');
+          name.textContent = book.name || '未命名世界书';
+          name.style.cssText = 'font-size:14px; color:var(--text-color, #333); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+          text.appendChild(name);
+
+          if (book.categoryId !== null && book.categoryId !== undefined && book.categoryId !== '') {
+            const category = document.createElement('span');
+            category.textContent = categoryNameById.get(String(book.categoryId)) || '未知分类';
+            category.style.cssText = 'margin-top:2px; font-size:11px; color:var(--text-secondary, #888);';
+            text.appendChild(category);
+          }
+
+          row.appendChild(checkbox);
+          row.appendChild(text);
+          list.appendChild(row);
+        });
+
+        const lastRow = list.lastElementChild;
+        if (lastRow) lastRow.style.borderBottom = 'none';
+
+        modalFooter.style.cssText = '';
+        modalFooter.style.flexDirection = 'row';
+        modalFooter.innerHTML = `
+          <button type="button" id="custom-modal-cancel">取消</button>
+          <button type="button" id="custom-modal-confirm" class="confirm-btn">导出</button>
+        `;
+
+        const cancelBtn = document.getElementById('custom-modal-cancel');
+        const confirmBtn = document.getElementById('custom-modal-confirm');
+        const selectAllBtn = document.getElementById('select-all-world-books-for-export');
+        const deselectAllBtn = document.getElementById('deselect-all-world-books-for-export');
+
+        const updateCount = () => {
+          const selectedCount = checkboxes.filter(checkbox => checkbox.checked).length;
+          count.textContent = `已选择 ${selectedCount} / ${books.length} 本`;
+          confirmBtn.disabled = selectedCount === 0;
+          confirmBtn.style.opacity = selectedCount === 0 ? '0.45' : '1';
+          confirmBtn.style.cursor = selectedCount === 0 ? 'not-allowed' : 'pointer';
+        };
+
+        checkboxes.forEach(checkbox => checkbox.addEventListener('change', updateCount));
+        selectAllBtn.onclick = () => {
+          checkboxes.forEach(checkbox => { checkbox.checked = true; });
+          updateCount();
+        };
+        deselectAllBtn.onclick = () => {
+          checkboxes.forEach(checkbox => { checkbox.checked = false; });
+          updateCount();
+        };
+        cancelBtn.onclick = () => {
+          modal.classList.remove('visible');
+          resolve(null);
+        };
+        confirmBtn.onclick = () => {
+          const selectedBooks = checkboxes
+            .filter(checkbox => checkbox.checked)
+            .map(checkbox => books[Number(checkbox.dataset.bookIndex)]);
+          modal.classList.remove('visible');
+          resolve(selectedBooks);
+        };
+
+        updateCount();
+        modal.classList.add('visible');
+      });
+    }
+
     async function exportWorldBooks() {
       try {
         const books = await db.worldBooks.toArray();
         const categories = await db.worldBookCategories.toArray();
 
-        if (books.length === 0 && categories.length === 0) {
+        if (books.length === 0) {
           alert("没有可导出的世界书数据。");
           return;
         }
+
+        const selectedBooks = await showWorldBookExportSelectionModal(books, categories);
+        if (!selectedBooks) return;
+
+        const selectedCategoryIds = new Set(
+          selectedBooks
+            .map(book => book.categoryId)
+            .filter(categoryId => categoryId !== null && categoryId !== undefined && categoryId !== '')
+            .map(String)
+        );
+        const selectedCategories = categories.filter(category => selectedCategoryIds.has(String(category.id)));
 
         const backupData = {
           type: 'EPhoneWorldBookBackup',
           version: 1,
           timestamp: Date.now(),
-          books: books,
-          categories: categories
+          books: selectedBooks,
+          categories: selectedCategories
         };
 
         const blob = new Blob(
@@ -774,7 +901,7 @@ window.initEventBindingsA = async function(state, db) {
         link.click();
         URL.revokeObjectURL(url);
 
-        await showCustomAlert('导出成功', '所有世界书数据已成功导出！');
+        await showCustomAlert('导出成功', `已成功导出 ${selectedBooks.length} 本世界书！`);
 
       } catch (error) {
         console.error("导出世界书时出错:", error);
@@ -933,6 +1060,10 @@ window.initEventBindingsA = async function(state, db) {
     window.renderWorldBookScreenProxy = renderWorldBookScreen;
 
     await loadAllDataFromDB();
+    // 在常规数据加载完成后再恢复异常中断的通话，避免启动阶段读取到半初始化状态。
+    if (typeof window.recoverInterruptedVoiceCalls === 'function') {
+      await window.recoverInterruptedVoiceCalls();
+    }
     await initFunds();
 
     // 初始化提示词管理器
@@ -1107,6 +1238,10 @@ window.initEventBindingsA = async function(state, db) {
       await showAdvancedExportImportModal();
     });
 
+    document.getElementById('advanced-import-btn')?.addEventListener('click', () => {
+      document.getElementById('advanced-import-input').click();
+    });
+
     // 高级导入文件选择
     document.getElementById('advanced-import-input').addEventListener('change', async (e) => {
       const file = e.target.files[0];
@@ -1136,10 +1271,12 @@ window.initEventBindingsA = async function(state, db) {
     // 双语模式开关事件
     document.getElementById('bilingual-mode-toggle').addEventListener('change', (e) => {
       document.getElementById('bilingual-display-mode-group').style.display = e.target.checked ? 'flex' : 'none';
+      document.getElementById('language-policy-settings').style.display = e.target.checked ? 'block' : 'none';
       if (state.activeChatId && state.chats[state.activeChatId] && state.chats[state.activeChatId].isGroup) {
         document.getElementById('bilingual-characters-group').style.display = e.target.checked ? 'block' : 'none';
       }
     });
+    if (window.languagePolicy) window.languagePolicy.bindSettingsUi();
     
     // 自动记忆开关实时生效
     document.getElementById('auto-memory-toggle').addEventListener('change', (e) => {
@@ -1328,6 +1465,7 @@ window.initEventBindingsA = async function(state, db) {
 
       // E. 清理全局临时变量 (最重要的一步！)
       ruleCache = {};
+      window.invalidateRenderingRuleCache?.();
       activeMessageTimestamp = null;
       activeTransferTimestamp = null;
       //lastRawAiResponse = ''; 
@@ -1530,16 +1668,49 @@ window.initEventBindingsA = async function(state, db) {
       document.getElementById('music-playlist-panel').classList.add('visible');
     });
     document.getElementById('close-playlist-btn').addEventListener('click', () => document.getElementById('music-playlist-panel').classList.remove('visible'));
-    document.getElementById('manage-playlist-btn').addEventListener('click', togglePlaylistManagementMode);
+    document.getElementById('manage-playlist-btn')?.addEventListener('click', togglePlaylistManagementMode);
     document.getElementById('select-all-playlist-checkbox').addEventListener('change', handleSelectAllPlaylistItems);
     document.getElementById('delete-selected-songs-btn').addEventListener('click', executeDeleteSelectedSongs);
     document.getElementById('upload-selected-to-catbox-btn').addEventListener('click', executeBatchUploadToCatbox);
     
-    // 上传按钮 -> 复用通用弹窗
-    document.getElementById('add-song-upload-btn').addEventListener('click', async () => {
-      const choice = await showChoiceModal('选择上传方式', [
-        { text: '📁 本地文件', value: 'local' },
-        { text: '🔗 网络URL', value: 'url' }
+    // 播放列表“更多”操作聚合菜单（无任何 Emoji）
+    document.getElementById('playlist-more-actions-btn')?.addEventListener('click', async () => {
+      const choice = await showChoiceModal('播放列表选项', [
+        { text: '上传/添加歌曲', value: 'upload' },
+        { text: '批量管理', value: 'manage' },
+        { text: '歌单管理', value: 'playlist_mgr' },
+        { text: '音乐账号', value: 'account' },
+        { text: '清理失效歌曲', value: 'cleanup' }
+      ]);
+
+      if (!choice) return;
+
+      if (choice === 'upload') {
+        const uploadChoice = await showChoiceModal('选择添加方式', [
+          { text: '本地音频文件', value: 'local' },
+          { text: '网络音频链接 (URL)', value: 'url' }
+        ]);
+        if (uploadChoice === 'local') {
+          document.getElementById('local-song-upload-input').click();
+        } else if (uploadChoice === 'url') {
+          addSongFromURL();
+        }
+      } else if (choice === 'manage') {
+        togglePlaylistManagementMode();
+      } else if (choice === 'playlist_mgr') {
+        if (typeof openPlaylistManager === 'function') openPlaylistManager();
+      } else if (choice === 'account') {
+        if (typeof openMusicAccountCenter === 'function') openMusicAccountCenter();
+      } else if (choice === 'cleanup') {
+        if (typeof cleanupInvalidSongs === 'function') cleanupInvalidSongs();
+      }
+    });
+
+    // 兼容历史上传按钮引用（无 Emoji）
+    document.getElementById('add-song-upload-btn')?.addEventListener('click', async () => {
+      const choice = await showChoiceModal('选择添加方式', [
+        { text: '本地音频文件', value: 'local' },
+        { text: '网络音频链接 (URL)', value: 'url' }
       ]);
       if (choice === 'local') {
         document.getElementById('local-song-upload-input').click();
@@ -1604,10 +1775,13 @@ window.initEventBindingsA = async function(state, db) {
 
     document.getElementById('send-btn').addEventListener('click', () => {
       playSilentAudio();
-      const content = chatInput.value.trim();
+      let content = chatInput.value.trim();
       if (!content || !state.activeChatId) return;
 
       const chat = state.chats[state.activeChatId];
+      if (window.CharacterBond && !chat.isGroup) {
+        content = window.CharacterBond.normalizePetMention(content, chat);
+      }
       if (content.startsWith('/n ') || content.startsWith('/旁白 ')) {
         const narrationText = content.replace(/^\/n\s+|^\/旁白\s+/, '');
 
@@ -1644,6 +1818,7 @@ window.initEventBindingsA = async function(state, db) {
 
       (async () => {
         chat.history.push(msg);
+        if (window.CharacterBond) window.CharacterBond.onMessageSaved(chat, msg);
         await db.chats.put(chat);
         renderChatList();
 
@@ -1965,7 +2140,9 @@ window.initEventBindingsA = async function(state, db) {
       state.globalSettings.globalCss = document.getElementById('global-css-input').value.trim();
       state.globalSettings.notificationSoundUrl = document.getElementById('notification-sound-url-input').value.trim();
       state.globalSettings.notificationVolume = parseInt(document.getElementById('notification-volume-slider').value) / 100;
+      state.globalSettings.apiMaxTokens = parseInt(document.getElementById('api-max-tokens-input').value) || 0;
       state.globalSettings.showStatusBar = document.getElementById('status-bar-toggle-switch').checked;
+      state.globalSettings.showSeconds = document.getElementById('global-show-seconds-switch').checked;
 
       state.globalSettings.showPhoneFrame = document.getElementById('phone-frame-toggle-switch').checked;
       state.globalSettings.enableMinimalChatUI = document.getElementById('minimal-chat-ui-switch').checked;
@@ -2044,47 +2221,91 @@ window.initEventBindingsA = async function(state, db) {
     });
 
 
-    document.getElementById('save-api-settings-btn').addEventListener('click', async () => {
+    const saveApiSettingsButton = document.getElementById('save-api-settings-btn');
+    saveApiSettingsButton.addEventListener('click', async () => {
+      if (saveApiSettingsButton.dataset.saving === 'true') return;
+      const originalSaveText = saveApiSettingsButton.textContent;
+      saveApiSettingsButton.dataset.saving = 'true';
+      saveApiSettingsButton.classList.add('is-saving');
+      saveApiSettingsButton.setAttribute('aria-disabled', 'true');
+      saveApiSettingsButton.textContent = '保存中…';
 
-      state.apiConfig.proxyUrl = document.getElementById('proxy-url').value.trim();
-      state.apiConfig.apiKey = document.getElementById('api-key').value.trim();
+      let saveStage = 'API 配置';
+      let apiConfigSaved = false;
+      let allSettingsSaved = false;
+      let saveFeedbackTitle = '';
+      let saveFeedbackMessage = '';
+      const legacySettingsErrors = [];
+      const pendingLegacySettings = [];
+      const saveLegacySetting = (key, value) => pendingLegacySettings.push([key, String(value)]);
+      const flushLegacySettings = () => {
+        for (const [key, value] of pendingLegacySettings.splice(0)) {
+          try {
+            localStorage.setItem(key, value);
+          } catch (error) {
+            console.error(`保存本地兼容设置 ${key} 失败:`, error);
+            legacySettingsErrors.push({ key, error });
+          }
+        }
+      };
+      const describeSaveError = error => error?.name === 'QuotaExceededError'
+        ? '浏览器存储空间不足。请先备份数据，再清理不需要的内容。'
+        : `${error?.name || '错误'}：${error?.message || String(error)}`;
+      const escapeModalText = value => String(value).replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[character]);
+      const applySavedSetting = (name, action) => {
+        try {
+          action();
+        } catch (error) {
+          console.error(`应用${name}失败:`, error);
+          legacySettingsErrors.push({ key: name, error });
+        }
+      };
+
+      try {
+
+      const nextApiConfig = { ...state.apiConfig };
+
+      nextApiConfig.proxyUrl = document.getElementById('proxy-url').value.trim();
+      nextApiConfig.apiKey = document.getElementById('api-key').value.trim();
       // 优先使用手写输入框的值，如果为空则使用下拉框的值
       const modelInput = document.getElementById('model-input').value.trim();
-      state.apiConfig.model = modelInput || document.getElementById('model-select').value;
-      state.apiConfig.minimaxGroupId = document.getElementById('minimax-group-id').value.trim();
-      state.apiConfig.minimaxApiKey = document.getElementById('minimax-api-key').value.trim();
-      state.apiConfig.minimaxModel = document.getElementById('minimax-model-select').value;
+      nextApiConfig.model = modelInput || document.getElementById('model-select').value;
+      nextApiConfig.minimaxGroupId = document.getElementById('minimax-group-id').value.trim();
+      nextApiConfig.minimaxApiKey = document.getElementById('minimax-api-key').value.trim();
+      nextApiConfig.minimaxModel = document.getElementById('minimax-model-select').value;
       const domainSelect = document.getElementById('minimax-domain-select');
       if (domainSelect) {
-        state.apiConfig.minimaxDomain = domainSelect.value;
-        localStorage.setItem('minimax-domain', domainSelect.value);
+        nextApiConfig.minimaxDomain = domainSelect.value;
+        saveLegacySetting('minimax-domain', domainSelect.value);
       }
-      localStorage.setItem('minimax-group-id', state.apiConfig.minimaxGroupId);
-      localStorage.setItem('minimax-api-key', state.apiConfig.minimaxApiKey);
-      localStorage.setItem('minimax-model', state.apiConfig.minimaxModel);
-      state.apiConfig.secondaryProxyUrl = document.getElementById('secondary-proxy-url').value.trim();
-      state.apiConfig.secondaryApiKey = document.getElementById('secondary-api-key').value.trim();
+      saveLegacySetting('minimax-group-id', nextApiConfig.minimaxGroupId);
+      saveLegacySetting('minimax-api-key', nextApiConfig.minimaxApiKey);
+      saveLegacySetting('minimax-model', nextApiConfig.minimaxModel);
+      nextApiConfig.secondaryProxyUrl = document.getElementById('secondary-proxy-url').value.trim();
+      nextApiConfig.secondaryApiKey = document.getElementById('secondary-api-key').value.trim();
       // 优先使用手写输入框的值，如果为空则使用下拉框的值
       const secondaryModelInput = document.getElementById('secondary-model-input').value.trim();
-      state.apiConfig.secondaryModel = secondaryModelInput || document.getElementById('secondary-model-select').value;
+      nextApiConfig.secondaryModel = secondaryModelInput || document.getElementById('secondary-model-select').value;
       
-      state.apiConfig.backgroundProxyUrl = document.getElementById('background-proxy-url').value.trim();
-      state.apiConfig.backgroundApiKey = document.getElementById('background-api-key').value.trim();
+      nextApiConfig.backgroundProxyUrl = document.getElementById('background-proxy-url').value.trim();
+      nextApiConfig.backgroundApiKey = document.getElementById('background-api-key').value.trim();
       // 优先使用手写输入框的值，如果为空则使用下拉框的值
       const backgroundModelInput = document.getElementById('background-model-input').value.trim();
-      state.apiConfig.backgroundModel = backgroundModelInput || document.getElementById('background-model-select').value;
+      nextApiConfig.backgroundModel = backgroundModelInput || document.getElementById('background-model-select').value;
       
       // 识图API
-      state.apiConfig.visionProxyUrl = document.getElementById('vision-proxy-url').value.trim();
-      state.apiConfig.visionApiKey = document.getElementById('vision-api-key').value.trim();
+      nextApiConfig.visionProxyUrl = document.getElementById('vision-proxy-url').value.trim();
+      nextApiConfig.visionApiKey = document.getElementById('vision-api-key').value.trim();
       const visionModelInput = document.getElementById('vision-model-input').value.trim();
-      state.apiConfig.visionModel = visionModelInput || document.getElementById('vision-model-select').value;
+      nextApiConfig.visionModel = visionModelInput || document.getElementById('vision-model-select').value;
       
       // 情侣空间API
-      state.apiConfig.couplespaceProxyUrl = document.getElementById('couplespace-proxy-url').value.trim();
-      state.apiConfig.couplespaceApiKey = document.getElementById('couplespace-api-key').value.trim();
+      nextApiConfig.couplespaceProxyUrl = document.getElementById('couplespace-proxy-url').value.trim();
+      nextApiConfig.couplespaceApiKey = document.getElementById('couplespace-api-key').value.trim();
       const couplespaceModelInput = document.getElementById('couplespace-model-input').value.trim();
-      state.apiConfig.couplespaceModel = couplespaceModelInput || document.getElementById('couplespace-model-select').value;
+      nextApiConfig.couplespaceModel = couplespaceModelInput || document.getElementById('couplespace-model-select').value;
 
       const imgbbEnable = document.getElementById('imgbb-enable-switch').checked;
       const imgbbApiKey = document.getElementById('imgbb-api-key').value.trim();
@@ -2092,116 +2313,115 @@ window.initEventBindingsA = async function(state, db) {
       const catboxUserHash = document.getElementById('catbox-userhash').value.trim();
 
 
-      state.apiConfig.imgbbEnable = imgbbEnable;
-      state.apiConfig.imgbbApiKey = imgbbApiKey;
-      state.apiConfig.catboxEnable = catboxEnable;
-      state.apiConfig.catboxUserHash = catboxUserHash;
+      nextApiConfig.imgbbEnable = imgbbEnable;
+      nextApiConfig.imgbbApiKey = imgbbApiKey;
+      nextApiConfig.catboxEnable = catboxEnable;
+      nextApiConfig.catboxUserHash = catboxUserHash;
 
 
-      localStorage.setItem('imgbb-enabled', imgbbEnable);
-      localStorage.setItem('imgbb-api-key', imgbbApiKey);
-      localStorage.setItem('catbox-enabled', catboxEnable);
-      localStorage.setItem('catbox-userhash', catboxUserHash);
+      saveLegacySetting('imgbb-enabled', imgbbEnable);
+      saveLegacySetting('imgbb-api-key', imgbbApiKey);
+      saveLegacySetting('catbox-enabled', catboxEnable);
+      saveLegacySetting('catbox-userhash', catboxUserHash);
 
       // 识图Token优化开关
       const imageTokenOptimize = document.getElementById('image-token-optimize-switch').checked;
-      state.apiConfig.imageTokenOptimize = imageTokenOptimize;
-      localStorage.setItem('image-token-optimize', imageTokenOptimize);
+      nextApiConfig.imageTokenOptimize = imageTokenOptimize;
+      saveLegacySetting('image-token-optimize', imageTokenOptimize);
 
       const githubEnable = document.getElementById('github-enable-switch').checked;
       const githubAutoBackup = document.getElementById('github-auto-backup-switch').checked;
       let backupInterval = parseInt(document.getElementById('github-backup-interval').value);
       if (isNaN(backupInterval) || backupInterval < 1) backupInterval = 30;
-      state.apiConfig.githubEnable = githubEnable;
-      state.apiConfig.githubAutoBackup = githubAutoBackup;
+      nextApiConfig.githubEnable = githubEnable;
+      nextApiConfig.githubAutoBackup = githubAutoBackup;
       const githubProxyEnable = document.getElementById('github-proxy-switch').checked;
       const githubProxyUrl = document.getElementById('github-proxy-url').value.trim();
 
-      state.apiConfig.githubProxyEnable = githubProxyEnable;
-      state.apiConfig.githubProxyUrl = githubProxyUrl;
+      nextApiConfig.githubProxyEnable = githubProxyEnable;
+      nextApiConfig.githubProxyUrl = githubProxyUrl;
 
-      localStorage.setItem('github-proxy-enabled', githubProxyEnable);
-      localStorage.setItem('github-proxy-url', githubProxyUrl);
-      state.apiConfig.githubUsername = document.getElementById('github-username').value.trim();
-      state.apiConfig.githubRepo = document.getElementById('github-repo').value.trim();
-      state.apiConfig.githubToken = document.getElementById('github-token').value.trim();
-      state.apiConfig.githubFilename = document.getElementById('github-filename').value.trim() || 'ephone_backup.json';
-      localStorage.setItem('github-username', state.apiConfig.githubUsername);
-      localStorage.setItem('github-repo', state.apiConfig.githubRepo);
-      localStorage.setItem('github-token', state.apiConfig.githubToken);
-      localStorage.setItem('github-filename', state.apiConfig.githubFilename);
-      state.apiConfig.novelaiApiKey = document.getElementById('novelai-api-key').value.trim();
-      state.apiConfig.novelaiModel = document.getElementById('novelai-model').value;
-      state.apiConfig.novelaiEnabled = document.getElementById('novelai-switch').checked;
+      saveLegacySetting('github-proxy-enabled', githubProxyEnable);
+      saveLegacySetting('github-proxy-url', githubProxyUrl);
+      nextApiConfig.githubUsername = document.getElementById('github-username').value.trim();
+      nextApiConfig.githubRepo = document.getElementById('github-repo').value.trim();
+      nextApiConfig.githubToken = document.getElementById('github-token').value.trim();
+      nextApiConfig.githubFilename = document.getElementById('github-filename').value.trim() || 'ephone_backup.json';
+      saveLegacySetting('github-username', nextApiConfig.githubUsername);
+      saveLegacySetting('github-repo', nextApiConfig.githubRepo);
+      saveLegacySetting('github-token', nextApiConfig.githubToken);
+      saveLegacySetting('github-filename', nextApiConfig.githubFilename);
+      nextApiConfig.novelaiApiKey = document.getElementById('novelai-api-key').value.trim();
+      nextApiConfig.novelaiModel = document.getElementById('novelai-model').value;
+      nextApiConfig.novelaiEnabled = document.getElementById('novelai-switch').checked;
       // 保存备份间隔
-      state.apiConfig.githubBackupInterval = backupInterval;
+      nextApiConfig.githubBackupInterval = backupInterval;
       // 保存开关状态到 localStorage
-      localStorage.setItem('github-enabled', githubEnable);
-      localStorage.setItem('github-auto-backup', githubAutoBackup);
-      localStorage.setItem('github-backup-interval', backupInterval);
+      saveLegacySetting('github-enabled', githubEnable);
+      saveLegacySetting('github-auto-backup', githubAutoBackup);
+      saveLegacySetting('github-backup-interval', backupInterval);
 
-      if (githubEnable && githubAutoBackup) {
-        // 传入动态的时间间隔
-        startAutoBackupTimer(backupInterval);
-      } else {
-        stopAutoBackupTimer();
-      }
-      await db.apiConfig.put(state.apiConfig);
+      await db.apiConfig.put(nextApiConfig);
+      Object.assign(state.apiConfig, nextApiConfig);
+      apiConfigSaved = true;
+      flushLegacySettings();
 
-
+      saveStage = '后台与全局设置';
+      const nextGlobalSettings = { ...state.globalSettings };
       const backgroundSwitch = document.getElementById('background-activity-switch');
       const intervalInput = document.getElementById('background-interval-input');
       const cooldownInput = document.getElementById('block-cooldown-input');
 
-      state.globalSettings.enableBackgroundActivity = backgroundSwitch.checked;
-      state.globalSettings.backgroundActivityInterval = parseInt(intervalInput.value) || 60;
-      state.globalSettings.blockCooldownHours = parseFloat(cooldownInput.value) || 1;
-      state.globalSettings.enableAiDrawing = document.getElementById('enable-ai-drawing-switch').checked;
+      nextGlobalSettings.enableBackgroundActivity = backgroundSwitch.checked;
+      nextGlobalSettings.backgroundActivityInterval = parseInt(intervalInput.value) || 60;
+      nextGlobalSettings.blockCooldownHours = parseFloat(cooldownInput.value) || 1;
+      nextGlobalSettings.enableAiDrawing = document.getElementById('enable-ai-drawing-switch').checked;
 
       // 保存悬浮球开关
       const floatingBallSwitch = document.getElementById('floating-ball-switch');
+      const oldFloatingBallEnabled = nextGlobalSettings.floatingBallEnabled;
       if (floatingBallSwitch) {
-        const newFloatingBallEnabled = floatingBallSwitch.checked;
-        const oldFloatingBallEnabled = state.globalSettings.floatingBallEnabled;
-        state.globalSettings.floatingBallEnabled = newFloatingBallEnabled;
-        
-        // 如果状态改变，更新悬浮球
-        if (oldFloatingBallEnabled !== newFloatingBallEnabled && typeof toggleFloatingBall === 'function') {
-          toggleFloatingBall(newFloatingBallEnabled);
-        }
+        nextGlobalSettings.floatingBallEnabled = floatingBallSwitch.checked;
       }
 
       // 新增：保存心声和动态功能开关
-      state.globalSettings.enableThoughts = document.getElementById('global-enable-thoughts-switch').checked;
-      state.globalSettings.customThoughtsUIEnabled = document.getElementById('custom-thoughts-ui-switch').checked;
-      state.globalSettings.customThoughtsHTML = document.getElementById('custom-thoughts-html-textarea').value;
-      state.globalSettings.customThoughtsCSS = document.getElementById('custom-thoughts-css-textarea').value;
-      state.globalSettings.customThoughtsPromptEnabled = document.getElementById('custom-thoughts-prompt-switch').checked;
-      state.globalSettings.customThoughtsPrompt = document.getElementById('custom-thoughts-prompt-textarea').value;
-      state.globalSettings.customSummaryPromptEnabled = document.getElementById('custom-summary-prompt-switch').checked;
-      state.globalSettings.customSummaryPrompt = document.getElementById('custom-summary-prompt-textarea').value;
-      state.globalSettings.customChatPromptEnabled = document.getElementById('custom-chat-prompt-switch').checked;
-      state.globalSettings.customChatPromptSingle = document.getElementById('custom-chat-prompt-single-textarea').value;
-      state.globalSettings.customChatPromptGroup = document.getElementById('custom-chat-prompt-group-textarea').value;
-      state.globalSettings.customChatPromptOffline = document.getElementById('custom-chat-prompt-offline-textarea').value;
-      state.globalSettings.customChatPromptGroupOffline = document.getElementById('custom-chat-prompt-group-offline-textarea').value;
-      state.globalSettings.enableQzoneActions = document.getElementById('global-enable-qzone-actions-switch').checked;
-      state.globalSettings.enableViewMyPhone = document.getElementById('global-enable-view-myphone-switch').checked;
-      state.globalSettings.enableCrossChat = document.getElementById('global-enable-cross-chat-switch').checked;
-      state.globalSettings.promptClearMemoryOnChatClear = document.getElementById('global-prompt-clear-memory-switch').checked;
+      const previousThoughtsUIEnabled = nextGlobalSettings.customThoughtsUIEnabled;
+      const previousThoughtsHTML = nextGlobalSettings.customThoughtsHTML;
+      const previousThoughtsCSS = nextGlobalSettings.customThoughtsCSS;
+      nextGlobalSettings.enableThoughts = document.getElementById('global-enable-thoughts-switch').checked;
+      nextGlobalSettings.customThoughtsUIEnabled = document.getElementById('custom-thoughts-ui-switch').checked;
+      nextGlobalSettings.customThoughtsHTML = document.getElementById('custom-thoughts-html-textarea').value;
+      nextGlobalSettings.customThoughtsCSS = document.getElementById('custom-thoughts-css-textarea').value;
+      window.PromptEntryManager?.syncAll();
+      nextGlobalSettings.customThoughtsPromptEnabled = document.getElementById('custom-thoughts-prompt-switch').checked;
+      nextGlobalSettings.customThoughtsPrompt = document.getElementById('custom-thoughts-prompt-textarea').value;
+      nextGlobalSettings.customSummaryPromptEnabled = document.getElementById('custom-summary-prompt-switch').checked;
+      nextGlobalSettings.customSummaryPrompt = document.getElementById('custom-summary-prompt-textarea').value;
+      nextGlobalSettings.customChatPromptEnabled = document.getElementById('custom-chat-prompt-switch').checked;
+      nextGlobalSettings.customChatPromptSingle = document.getElementById('custom-chat-prompt-single-textarea').value;
+      nextGlobalSettings.customChatPromptGroup = document.getElementById('custom-chat-prompt-group-textarea').value;
+      nextGlobalSettings.customChatPromptOffline = document.getElementById('custom-chat-prompt-offline-textarea').value;
+      nextGlobalSettings.customChatPromptGroupOffline = document.getElementById('custom-chat-prompt-group-offline-textarea').value;
+      if (window.PromptEntryManager) {
+        nextGlobalSettings.customPromptCollections = window.PromptEntryManager.exportState();
+      }
+      nextGlobalSettings.enableQzoneActions = document.getElementById('global-enable-qzone-actions-switch').checked;
+      nextGlobalSettings.enableViewMyPhone = document.getElementById('global-enable-view-myphone-switch').checked;
+      nextGlobalSettings.enableCrossChat = document.getElementById('global-enable-cross-chat-switch').checked;
+      nextGlobalSettings.promptClearMemoryOnChatClear = document.getElementById('global-prompt-clear-memory-switch').checked;
       
       // 新增：保存后台查看用户手机设置
-      state.globalSettings.enableViewMyPhoneInBackground = document.getElementById('global-enable-view-myphone-bg-switch').checked;
+      nextGlobalSettings.enableViewMyPhoneInBackground = document.getElementById('global-enable-view-myphone-bg-switch').checked;
       const viewMyPhoneChanceInput = document.getElementById('global-view-myphone-chance-input');
-      state.globalSettings.viewMyPhoneChance = viewMyPhoneChanceInput.value.trim() === '' ? null : parseInt(viewMyPhoneChanceInput.value);
+      nextGlobalSettings.viewMyPhoneChance = viewMyPhoneChanceInput.value.trim() === '' ? null : parseInt(viewMyPhoneChanceInput.value);
 
-      state.globalSettings.chatRenderWindow = parseInt(document.getElementById('chat-render-window-input').value) || 50;
-      state.globalSettings.chatListRenderWindow = parseInt(document.getElementById('chat-list-render-window-input').value) || 30;
-      state.globalSettings.apiTemperature = parseFloat(document.getElementById('api-temperature-input').value);
-      state.globalSettings.apiTopP = parseFloat(document.getElementById('api-top-p-input').value);
-      state.globalSettings.apiMaxTokens = parseInt(document.getElementById('api-max-tokens-input').value) || 0;
-      state.globalSettings.apiPresencePenalty = parseFloat(document.getElementById('api-presence-penalty-input').value);
-      state.globalSettings.apiFrequencyPenalty = parseFloat(document.getElementById('api-frequency-penalty-input').value);
+      nextGlobalSettings.chatRenderWindow = parseInt(document.getElementById('chat-render-window-input').value) || 50;
+      nextGlobalSettings.chatListRenderWindow = parseInt(document.getElementById('chat-list-render-window-input').value) || 30;
+      nextGlobalSettings.apiTemperature = parseFloat(document.getElementById('api-temperature-input').value);
+      nextGlobalSettings.apiTopP = parseFloat(document.getElementById('api-top-p-input').value);
+      nextGlobalSettings.apiMaxTokens = parseInt(document.getElementById('api-max-tokens-input').value) || 0;
+      nextGlobalSettings.apiPresencePenalty = parseFloat(document.getElementById('api-presence-penalty-input').value);
+      nextGlobalSettings.apiFrequencyPenalty = parseFloat(document.getElementById('api-frequency-penalty-input').value);
 
       // 新增：保存 API 参数独立开关
       const topPEnabledCheckbox = document.getElementById('api-top-p-enabled');
@@ -2209,31 +2429,42 @@ window.initEventBindingsA = async function(state, db) {
       const presenceEnabledCheckbox = document.getElementById('api-presence-penalty-enabled');
       const frequencyEnabledCheckbox = document.getElementById('api-frequency-penalty-enabled');
 
-      if (topPEnabledCheckbox) state.globalSettings.apiTopPEnabled = topPEnabledCheckbox.checked;
-      if (maxTokensEnabledCheckbox) state.globalSettings.apiMaxTokensEnabled = maxTokensEnabledCheckbox.checked;
-      if (presenceEnabledCheckbox) state.globalSettings.apiPresencePenaltyEnabled = presenceEnabledCheckbox.checked;
-      if (frequencyEnabledCheckbox) state.globalSettings.apiFrequencyPenaltyEnabled = frequencyEnabledCheckbox.checked;
+      if (topPEnabledCheckbox) nextGlobalSettings.apiTopPEnabled = topPEnabledCheckbox.checked;
+      if (maxTokensEnabledCheckbox) nextGlobalSettings.apiMaxTokensEnabled = maxTokensEnabledCheckbox.checked;
+      if (presenceEnabledCheckbox) nextGlobalSettings.apiPresencePenaltyEnabled = presenceEnabledCheckbox.checked;
+      if (frequencyEnabledCheckbox) nextGlobalSettings.apiFrequencyPenaltyEnabled = frequencyEnabledCheckbox.checked;
       
       // 方案4：保存API历史记录开关状态
       const apiHistorySwitch = document.getElementById('enable-api-history-switch');
       if (apiHistorySwitch) {
-        state.globalSettings.enableApiHistory = apiHistorySwitch.checked;
+        nextGlobalSettings.enableApiHistory = apiHistorySwitch.checked;
       }
       
       // 保存安全渲染模式
       const safeRenderSwitch = document.getElementById('safe-render-mode-switch');
-      const oldSafeRenderMode = state.globalSettings.safeRenderMode;
+      const oldSafeRenderMode = nextGlobalSettings.safeRenderMode;
       if (safeRenderSwitch) {
-        state.globalSettings.safeRenderMode = safeRenderSwitch.checked;
+        nextGlobalSettings.safeRenderMode = safeRenderSwitch.checked;
       }
       
       const apiStreamSwitch = document.getElementById('enable-api-stream-switch');
       if (apiStreamSwitch) {
-        state.globalSettings.enableApiStream = apiStreamSwitch.checked;
+        nextGlobalSettings.enableApiStream = apiStreamSwitch.checked;
       }
       
-      await db.globalSettings.put(state.globalSettings);
-      
+      await db.globalSettings.put(nextGlobalSettings);
+      Object.assign(state.globalSettings, nextGlobalSettings);
+      if (floatingBallSwitch && oldFloatingBallEnabled !== nextGlobalSettings.floatingBallEnabled && typeof toggleFloatingBall === 'function') {
+        applySavedSetting('悬浮球设置', () => toggleFloatingBall(nextGlobalSettings.floatingBallEnabled));
+      }
+      if (
+        previousThoughtsUIEnabled !== nextGlobalSettings.customThoughtsUIEnabled
+        || previousThoughtsHTML !== nextGlobalSettings.customThoughtsHTML
+        || previousThoughtsCSS !== nextGlobalSettings.customThoughtsCSS
+      ) {
+        applySavedSetting('心声界面设置', () => window.invalidateCustomThoughtsUI?.(true));
+      }
+
       // 如果安全渲染模式发生变化，提醒用户刷新页面
       if (safeRenderSwitch && oldSafeRenderMode !== safeRenderSwitch.checked) {
         setTimeout(() => {
@@ -2243,26 +2474,75 @@ window.initEventBindingsA = async function(state, db) {
         }, 100);
       }
 
-      stopBackgroundSimulation();
-      if (state.globalSettings.enableBackgroundActivity) {
-        startBackgroundSimulation();
-        console.log(`后台活动模拟已启动，间隔: ${state.globalSettings.backgroundActivityInterval}秒`);
-      } else {
-        console.log("后台活动模拟已停止。");
-      }
+      applySavedSetting('后台活动', () => {
+        stopBackgroundSimulation();
+        if (nextGlobalSettings.enableBackgroundActivity) {
+          startBackgroundSimulation();
+          console.log(`后台活动模拟已启动，间隔: ${nextGlobalSettings.backgroundActivityInterval}秒`);
+        } else {
+          console.log('后台活动模拟已停止。');
+        }
+      });
 
+      applySavedSetting('自动备份计时器', () => {
+        if (githubEnable && githubAutoBackup) {
+          startAutoBackupTimer(backupInterval);
+        } else {
+          stopAutoBackupTimer();
+        }
+      });
+
+      saveStage = '图像生成设置';
       // 保存NovelAI配置到localStorage
       const novelaiEnabled = document.getElementById('novelai-switch').checked;
       const novelaiModel = document.getElementById('novelai-model').value;
       const novelaiApiKey = document.getElementById('novelai-api-key').value.trim();
-      localStorage.setItem('novelai-enabled', novelaiEnabled);
-      localStorage.setItem('novelai-model', novelaiModel);
-      localStorage.setItem('novelai-api-key', novelaiApiKey);
+      saveLegacySetting('novelai-enabled', novelaiEnabled);
+      saveLegacySetting('novelai-model', novelaiModel);
+      saveLegacySetting('novelai-api-key', novelaiApiKey);
+      flushLegacySettings();
 
       // 保存Google Imagen配置到localStorage
-      saveGoogleImagenSettings();
+      try {
+        saveGoogleImagenSettings();
+      } catch (error) {
+        console.error('保存 Google Imagen 设置失败:', error);
+        legacySettingsErrors.push({ key: 'Google Imagen', error });
+      }
 
-      alert('所有API与后台设置已保存!');
+      // 保存 GPT 生图配置到 localStorage
+      try {
+        saveOpenAIImageSettings();
+      } catch (error) {
+        console.error('保存 GPT 生图设置失败:', error);
+        legacySettingsErrors.push({ key: 'GPT 生图', error });
+      }
+
+      if (legacySettingsErrors.length) {
+        const firstFailure = legacySettingsErrors[0];
+        saveFeedbackTitle = '部分设置未保存';
+        saveFeedbackMessage = `API 配置和全局设置已保存，但本地附带设置有 ${legacySettingsErrors.length} 项未保存。\n首项：${firstFailure.key}，${describeSaveError(firstFailure.error)}`;
+      } else {
+        allSettingsSaved = true;
+        saveFeedbackTitle = '保存成功';
+        saveFeedbackMessage = '所有 API 与后台设置已保存。';
+      }
+      } catch (error) {
+        console.error(`保存 ${saveStage} 失败:`, error);
+        saveFeedbackTitle = apiConfigSaved ? '部分设置未保存' : 'API 配置未保存';
+        saveFeedbackMessage = `${apiConfigSaved ? 'API 配置已保存，但' : ''}${saveStage}保存失败。\n${describeSaveError(error)}`
+          + (legacySettingsErrors.length ? `\n另有 ${legacySettingsErrors.length} 项本地附带设置未保存。` : '');
+      } finally {
+        saveApiSettingsButton.dataset.saving = 'false';
+        saveApiSettingsButton.classList.remove('is-saving');
+        saveApiSettingsButton.removeAttribute('aria-disabled');
+        saveApiSettingsButton.textContent = originalSaveText;
+      }
+      await showCustomAlert(saveFeedbackTitle, escapeModalText(saveFeedbackMessage));
+      if (allSettingsSaved) {
+        const apiSettingsScreen = document.getElementById('api-settings-screen');
+        apiSettingsScreen?.dispatchEvent(new CustomEvent('api-settings-save-success'));
+      }
     });
 
 
@@ -3074,6 +3354,16 @@ window.initEventBindingsA = async function(state, db) {
       if (!state.activeChatId) return;
       const chat = state.chats[state.activeChatId];
       const isGroup = chat.isGroup;
+      if (window.CharacterBond) window.CharacterBond.loadSettingsUi(chat);
+      const mcpEditor = document.getElementById('chat-mcp-permission-editor');
+      const groupMcpNote = document.getElementById('group-mcp-permission-note');
+      if (mcpEditor && groupMcpNote) {
+        mcpEditor.style.display = isGroup ? 'none' : 'block';
+        groupMcpNote.style.display = isGroup ? 'block' : 'none';
+        if (!isGroup && window.mcpManager && typeof window.mcpManager.renderPermissionEditor === 'function') {
+          window.mcpManager.renderPermissionEditor(mcpEditor, chat);
+        }
+      }
 
       const weatherSection = document.getElementById('weather-settings-section');
       if (isGroup) {
@@ -3203,6 +3493,7 @@ window.initEventBindingsA = async function(state, db) {
       const timeZoneGroup = document.getElementById('time-zone-group');
       timePerceptionToggle.checked = chat.settings.enableTimePerception;
       timeZoneGroup.style.display = timePerceptionToggle.checked ? 'block' : 'none';
+      if (window.TimeAwareness) window.TimeAwareness.loadSettingsUi(chat);
 
 
       const timezoneSelect = document.getElementById('time-zone-select');
@@ -3225,6 +3516,7 @@ window.initEventBindingsA = async function(state, db) {
       document.getElementById('bilingual-display-mode-select').value = chat.settings.bilingualDisplayMode || 'outside';
       document.getElementById('bilingual-display-mode-group').style.display = 
         (chat.settings.enableBilingualMode) ? 'flex' : 'none';
+      if (window.languagePolicy) window.languagePolicy.loadSettingsUi(chat);
       
       if (isGroup) {
         document.getElementById('bilingual-characters-group').style.display = 
@@ -3248,7 +3540,7 @@ window.initEventBindingsA = async function(state, db) {
           const displayText = document.querySelector('#bilingual-chars-multiselect .selected-options-text');
 
           if (checkedBoxes.length === 0) {
-            displayText.textContent = '全员双语';
+            displayText.textContent = '全员生效';
           } else if (checkedBoxes.length > 2) {
             displayText.textContent = `已选择 ${checkedBoxes.length} 个角色`;
           } else {
@@ -3266,7 +3558,7 @@ window.initEventBindingsA = async function(state, db) {
         newBilingualSelectBox.addEventListener('click', (e) => {
           e.stopPropagation();
           if (state.globalSettings.dropdownPopupMode) {
-            showMultiselectPopup('生效双语角色', bilingualCharsContainer, updateBilingualSelectionDisplay);
+            showMultiselectPopup('语言与翻译生效角色', bilingualCharsContainer, updateBilingualSelectionDisplay);
           } else {
             bilingualCharsContainer.classList.toggle('visible');
             newBilingualSelectBox.classList.toggle('expanded');
@@ -3418,6 +3710,18 @@ window.initEventBindingsA = async function(state, db) {
         document.getElementById('ai-voice-lang-select').value = chat.settings.ttsLanguage || '';
         document.getElementById('chat-show-seconds-switch').checked = chat.settings.showSeconds !== undefined ? chat.settings.showSeconds : (state.globalSettings.showSeconds || false);
         document.getElementById('enable-tts-switch').checked = chat.settings.enableTts !== false;
+        document.getElementById('enable-real-voice-switch').checked = chat.settings.enableRealVoice !== false;
+        document.getElementById('real-voice-operation-select').value = chat.settings.realVoiceOperation || 'tap';
+        document.getElementById('voice-understanding-mode-select').value = chat.settings.voiceUnderstandingMode || 'auto';
+        document.getElementById('voice-transcription-url-input').value = chat.settings.voiceTranscriptionUrl || '';
+        document.getElementById('voice-transcription-model-input').value = chat.settings.voiceTranscriptionModel || 'whisper-1';
+        document.getElementById('voice-transcription-key-input').value = chat.settings.voiceTranscriptionKey || '';
+        document.getElementById('voice-max-duration-select').value = String(chat.settings.voiceMaxDuration || 60);
+        document.getElementById('voice-confirm-transcript-switch').checked = chat.settings.voiceConfirmTranscript !== false;
+        document.getElementById('voice-call-input-mode-select').value = chat.settings.voiceCallInputMode || 'text';
+        document.getElementById('voice-call-understanding-select').value = chat.settings.voiceCallUnderstandingMode || 'same';
+        document.getElementById('voice-call-text-fallback-switch').checked = chat.settings.voiceCallTextFallback !== false;
+        if (window.voiceRecording?.refreshSettingsUi) window.voiceRecording.refreshSettingsUi();
         document.getElementById('ai-persona').value = chat.settings.aiPersona;
         
         // 动态年龄设置回显
@@ -3721,8 +4025,14 @@ window.initEventBindingsA = async function(state, db) {
 
 
       const characterProfile = state.chats[member.id];
+      if (window.mcpManager && typeof window.mcpManager.readPermissionEditor === 'function') {
+        member.mcp = window.mcpManager.readPermissionEditor(
+          document.getElementById('member-mcp-permission-editor')
+        );
+      }
       if (characterProfile) {
         characterProfile.settings.aiAvatar = newAvatarUrl;
+        characterProfile.settings.mcp = member.mcp;
         await db.chats.put(characterProfile);
       }
 
@@ -3750,6 +4060,13 @@ window.initEventBindingsA = async function(state, db) {
 
       const memberAvatar = member.avatar || (state.chats[member.id] ? state.chats[member.id].settings.aiAvatar : defaultGroupMemberAvatar);
       document.getElementById('member-avatar-preview').src = memberAvatar;
+      if (window.mcpManager && typeof window.mcpManager.renderPermissionEditor === 'function') {
+        const characterProfile = state.chats[member.id];
+        window.mcpManager.renderPermissionEditor(
+          document.getElementById('member-mcp-permission-editor'),
+          characterProfile || { settings: { mcp: member.mcp } }
+        );
+      }
 
       document.getElementById('member-settings-modal').classList.add('visible');
     }
@@ -3782,8 +4099,14 @@ window.initEventBindingsA = async function(state, db) {
 
 
       const characterProfile = state.chats[member.id];
+      if (window.mcpManager && typeof window.mcpManager.readPermissionEditor === 'function') {
+        member.mcp = window.mcpManager.readPermissionEditor(
+          document.getElementById('member-mcp-permission-editor')
+        );
+      }
       if (characterProfile) {
         characterProfile.settings.aiAvatar = newAvatarUrl;
+        characterProfile.settings.mcp = member.mcp;
         await db.chats.put(characterProfile);
       }
 
@@ -3997,13 +4320,31 @@ window.initEventBindingsA = async function(state, db) {
     document.getElementById('save-chat-settings-btn').addEventListener('click', async () => {
       if (!state.activeChatId) return;
       const chat = state.chats[state.activeChatId];
+      const shouldOpenPetSetup = !chat.isGroup
+        && !chat.settings.enableSharedPet
+        && document.getElementById('shared-pet-switch').checked
+        && chat.sharedPet?.status !== 'active';
 
+      if (window.languagePolicy) {
+        const languageError = window.languagePolicy.validateSettingsUi(document.getElementById('bilingual-mode-toggle').checked);
+        if (languageError) {
+          await showCustomAlert('语言设置未完成', languageError);
+          return;
+        }
+      }
 
       const oldOfflineModeState = chat.settings.isOfflineMode || false;
 
 
       const newName = document.getElementById('chat-name-input').value.trim();
       if (!newName) return alert('备注名/群名不能为空！');
+      if (!chat.isGroup && window.CharacterBond) {
+        window.CharacterBond.setSwitches(
+          chat,
+          document.getElementById('character-spark-switch').checked,
+          document.getElementById('shared-pet-switch').checked
+        );
+      }
       if (!chat.isGroup && newName !== chat.name) {
         if (!chat.nameHistory) chat.nameHistory = [];
         if (!chat.nameHistory.includes(chat.name)) chat.nameHistory.push(chat.name);
@@ -4080,6 +4421,7 @@ window.initEventBindingsA = async function(state, db) {
 
       chat.settings.enableTimePerception = document.getElementById('time-perception-toggle').checked;
       chat.settings.timeZone = document.getElementById('time-zone-select').value;
+      if (window.TimeAwareness) window.TimeAwareness.saveSettingsUi(chat);
       chat.settings.lyricsPosition = {
         vertical: document.getElementById('lyrics-vertical-pos').value,
         horizontal: document.getElementById('lyrics-horizontal-pos').value,
@@ -4091,6 +4433,7 @@ window.initEventBindingsA = async function(state, db) {
       // 保存双语模式设置
       chat.settings.enableBilingualMode = document.getElementById('bilingual-mode-toggle').checked;
       chat.settings.bilingualDisplayMode = document.getElementById('bilingual-display-mode-select').value;
+      if (window.languagePolicy) window.languagePolicy.saveSettingsUi(chat);
       
       if (chat.isGroup) {
         const checkedBilingualChars = document.querySelectorAll('#bilingual-chars-checkboxes-container input[type="checkbox"]:checked');
@@ -4257,6 +4600,17 @@ window.initEventBindingsA = async function(state, db) {
         chat.settings.ttsLanguage = document.getElementById('ai-voice-lang-select').value;
         chat.settings.showSeconds = document.getElementById('chat-show-seconds-switch').checked;
         chat.settings.enableTts = document.getElementById('enable-tts-switch').checked;
+        chat.settings.enableRealVoice = document.getElementById('enable-real-voice-switch').checked;
+        chat.settings.realVoiceOperation = document.getElementById('real-voice-operation-select').value;
+        chat.settings.voiceUnderstandingMode = document.getElementById('voice-understanding-mode-select').value;
+        chat.settings.voiceTranscriptionUrl = document.getElementById('voice-transcription-url-input').value.trim();
+        chat.settings.voiceTranscriptionModel = document.getElementById('voice-transcription-model-input').value.trim() || 'whisper-1';
+        chat.settings.voiceTranscriptionKey = document.getElementById('voice-transcription-key-input').value.trim();
+        chat.settings.voiceMaxDuration = parseInt(document.getElementById('voice-max-duration-select').value, 10) || 60;
+        chat.settings.voiceConfirmTranscript = document.getElementById('voice-confirm-transcript-switch').checked;
+        chat.settings.voiceCallInputMode = document.getElementById('voice-call-input-mode-select').value;
+        chat.settings.voiceCallUnderstandingMode = document.getElementById('voice-call-understanding-select').value;
+        chat.settings.voiceCallTextFallback = document.getElementById('voice-call-text-fallback-switch').checked;
         chat.settings.aiAvatar = document.getElementById('ai-avatar-preview').src;
         chat.settings.myNickname = document.getElementById('my-nickname-input').value.trim() || '我';
         chat.settings.actionCooldownMinutes = parseInt(document.getElementById('ai-action-cooldown-input').value) || 10;
@@ -4269,6 +4623,11 @@ window.initEventBindingsA = async function(state, db) {
       if (typeof window.saveVideoOptimizationSettings === 'function') {
         window.saveVideoOptimizationSettings(chat);
       }
+      if (!chat.isGroup && window.mcpManager && typeof window.mcpManager.readPermissionEditor === 'function') {
+        chat.settings.mcp = window.mcpManager.readPermissionEditor(
+          document.getElementById('chat-mcp-permission-editor')
+        );
+      }
 
       await db.chats.put(chat);
       if (!chat.isGroup) {
@@ -4277,9 +4636,14 @@ window.initEventBindingsA = async function(state, db) {
       }
       applyLyricsBarPosition(chat);
       applyScopedCss(chat.settings.customCss, '#chat-messages', 'custom-bubble-style');
+      const returningFromSettings = document.getElementById('chat-settings-screen').classList.contains('active');
       showScreen('chat-interface-screen');
-      renderChatInterface(state.activeChatId);
+      if (!returningFromSettings) renderChatInterface(state.activeChatId);
       renderChatList();
+      if (shouldOpenPetSetup && window.CharacterBond) {
+        window.CharacterBond.showBondModal('pet', chat);
+      }
+      if (window.voiceRecording?.refreshAvailability) window.voiceRecording.refreshAvailability();
     });
     // 暴露需要跨文件引用的函数到 window
     window.handleWorldBookImport = handleWorldBookImport;

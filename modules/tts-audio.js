@@ -43,7 +43,44 @@
   const ttsQueue = [];
   let isTtsPlaying = false;
 
+  // 参考并改写自 yxlforever/YYY：
+  // https://github.com/yxlforever/YYY/commit/ece2d6bec633ced55c89af3871f96c97ebf3aa7e
+  // 用途：限制仅用于加速播放的临时 TTS 内存缓存，并确保 Blob URL、请求与 FileReader 可释放。
+  // 本实现不删除聊天、语音消息或任何持久化用户数据，也不改变原有 TTS 入口与配置。
+  const TTS_CACHE_MAX = 15;
+  let currentCallTtsObjectUrl = null;
+  let currentChatTtsObjectUrl = null;
+  let callTtsAbortController = null;
+  let callTtsGeneration = 0;
+  let chatTtsGeneration = 0;
+  let activeTtsCacheReader = null;
+
+  function revokeCallTtsUrl() {
+    if (!currentCallTtsObjectUrl) return;
+    try { URL.revokeObjectURL(currentCallTtsObjectUrl); } catch (error) { }
+    currentCallTtsObjectUrl = null;
+  }
+
+  function revokeChatTtsUrl() {
+    if (!currentChatTtsObjectUrl) return;
+    try { URL.revokeObjectURL(currentChatTtsObjectUrl); } catch (error) { }
+    currentChatTtsObjectUrl = null;
+  }
+
+  function trimTtsCache() {
+    if (!state.ttsCache || typeof state.ttsCache.size !== 'number') return;
+    while (state.ttsCache.size > TTS_CACHE_MAX) {
+      const oldestKey = state.ttsCache.keys().next().value;
+      state.ttsCache.delete(oldestKey);
+    }
+  }
+
   function stopTtsQueue() {
+    callTtsGeneration++;
+    if (callTtsAbortController) {
+      callTtsAbortController.abort();
+      callTtsAbortController = null;
+    }
     ttsQueue.length = 0;
     isTtsPlaying = false;
     const callPlayer = document.getElementById('call-tts-audio-player');
@@ -51,8 +88,10 @@
       callPlayer.onended = null;
       callPlayer.onerror = null;
       callPlayer.pause();
-      callPlayer.src = '';
+      callPlayer.removeAttribute('src');
+      try { callPlayer.load(); } catch (error) { }
     }
+    revokeCallTtsUrl();
   }
 
   // 单条语音消息播放状态（用于同一条点两次=暂停/取消，退出聊天=停播）
@@ -62,22 +101,29 @@
 
   /** 只停聊天语音条播放，不清通话 TTS 队列（打着电话切到别人聊天时用） */
   function stopChatMessageTtsOnly() {
+    chatTtsGeneration++;
     if (ttsAbortController) {
       ttsAbortController.abort();
       ttsAbortController = null;
     }
     currentTtsMessageKey = '';
     currentTtsLoading = false;
+    if (activeTtsCacheReader) {
+      try { activeTtsCacheReader.abort(); } catch (error) { }
+      activeTtsCacheReader = null;
+    }
     const ttsPlayer = document.getElementById('tts-audio-player');
     if (ttsPlayer) {
       ttsPlayer.onended = null;
       ttsPlayer.onpause = null;
       ttsPlayer.pause();
-      ttsPlayer.src = '';
+      ttsPlayer.removeAttribute('src');
+      try { ttsPlayer.load(); } catch (error) { }
       delete ttsPlayer.dataset.currentText;
       delete ttsPlayer.dataset.currentVoiceId;
       delete ttsPlayer.dataset.currentMessageKey;
     }
+    revokeChatTtsUrl();
     document.querySelectorAll('.voice-play-btn').forEach(btn => { btn.textContent = '▶'; });
     document.querySelectorAll('.voice-message-body .loading-spinner').forEach(el => { el.style.display = 'none'; });
     document.querySelectorAll('.voice-message-body .voice-play-btn').forEach(btn => { btn.style.display = 'flex'; });
@@ -96,6 +142,9 @@
 
     isTtsPlaying = true;
     const { text, voiceId } = ttsQueue.shift();
+    const generation = callTtsGeneration;
+    const controller = new AbortController();
+    callTtsAbortController = controller;
 
     try {
       const { minimaxGroupId, minimaxApiKey } = state.apiConfig;
@@ -131,12 +180,14 @@
             format: "mp3",
             channel: 1
           }
-        })
+        }),
+        signal: controller.signal
       });
 
       if (!response.ok) throw new Error("API请求失败");
 
       const data = await response.json();
+      if (controller.signal.aborted || generation !== callTtsGeneration) return;
       if (data.base_resp && data.base_resp.status_code !== 0) throw new Error(data.base_resp.status_msg);
 
       const audioHex = data.data?.audio;
@@ -148,6 +199,8 @@
       const audioBytes = hexToUint8Array(audioHex);
       const audioBlob = new Blob([audioBytes], { type: 'audio/mpeg' });
       const audioUrl = URL.createObjectURL(audioBlob);
+      revokeCallTtsUrl();
+      currentCallTtsObjectUrl = audioUrl;
 
       const callPlayer = document.getElementById('call-tts-audio-player');
       callPlayer.src = audioUrl;
@@ -155,19 +208,24 @@
 
       // 播完这条再播下一条
       callPlayer.onended = () => {
-        URL.revokeObjectURL(audioUrl);
+        revokeCallTtsUrl();
         processNextTts();
       };
       callPlayer.onerror = () => {
-        URL.revokeObjectURL(audioUrl);
+        revokeCallTtsUrl();
         processNextTts();
       };
 
       await callPlayer.play();
 
     } catch (error) {
-      console.error("TTS生成失败:", error);
-      processNextTts(); // 失败也继续下一条
+      if (error.name !== 'AbortError' && generation === callTtsGeneration) {
+        revokeCallTtsUrl();
+        console.error("TTS生成失败:", error);
+        processNextTts(); // 失败也继续下一条
+      }
+    } finally {
+      if (callTtsAbortController === controller) callTtsAbortController = null;
     }
   }
 
@@ -233,6 +291,12 @@
       // 设置新的音频源
       realAudioPlayer.src = audioDataDecoded;
       realAudioPlayer.dataset.currentAudio = audioData;
+      realAudioPlayer.onended = () => {
+        realAudioPlayer.removeAttribute('src');
+        delete realAudioPlayer.dataset.currentAudio;
+        try { realAudioPlayer.load(); } catch (error) { }
+      };
+      realAudioPlayer.onerror = realAudioPlayer.onended;
 
       // 播放音频
       await realAudioPlayer.play();
@@ -261,7 +325,23 @@
         // 优先使用标签上的ID，如果没有则用设置里的
         if (!voiceId) voiceId = chat.settings.minimaxVoiceId;
         // 【关键修复】获取用户在设置中选择的语言/方言
-        if (chat.settings.ttsLanguage) ttsLanguage = chat.settings.ttsLanguage;
+        if (chat.settings.ttsLanguage) {
+          ttsLanguage = chat.settings.ttsLanguage;
+        } else if (window.languagePolicy && chat.settings.enableBilingualMode) {
+          const policy = window.languagePolicy.getPolicy(chat);
+          const selectedLanguage = policy.ttsReadMode === 'translation'
+            ? (policy.translationMode === 'interface'
+              ? (localStorage.getItem('ephone-language') === 'en' ? 'en-US' : 'zh-Hans-CN')
+              : policy.translationLanguage)
+            : policy.outputLanguage;
+          const languageMap = {
+            'zh-Hans-CN': 'zh-CN', 'zh-Hant-TW': 'zh-CN', 'zh-Hant-HK': 'zh-HK',
+            'yue-Hant-HK': 'zh-HK', 'yue-Hans-CN': 'zh-HK', 'en-GB': 'en-US',
+            'ko-KR': 'ko-KR', 'ja-JP': 'ja-JP', 'fr-FR': 'fr-FR', 'de-DE': 'de-DE',
+            'es-MX': 'es-ES', 'pt-PT': 'pt-BR'
+          };
+          ttsLanguage = languageMap[selectedLanguage] || selectedLanguage || ttsLanguage;
+        }
       }
 
       // 处理"仅读取对话"功能
@@ -300,6 +380,14 @@
     }
 
     ttsPlayer.pause();
+    if (ttsAbortController) {
+      ttsAbortController.abort();
+      ttsAbortController = null;
+    }
+    chatTtsGeneration++;
+    const generation = chatTtsGeneration;
+    currentTtsLoading = false;
+    revokeChatTtsUrl();
     document.querySelectorAll('.voice-play-btn').forEach(btn => btn.textContent = '▶');
 
     // 2. 检查缓存 (Key加入语言区分，防止切换方言后读到旧缓存)
@@ -307,6 +395,10 @@
     let cachedAudio = state.ttsCache.get(cacheKey);
     if (cachedAudio) {
       console.log("从缓存播放 TTS...");
+      // 命中后移到队尾，按真实使用顺序淘汰临时缓存。
+      state.ttsCache.delete(cacheKey);
+      state.ttsCache.set(cacheKey, cachedAudio);
+      trimTtsCache();
       currentTtsMessageKey = messageKey;
       await playAudioFromData(cachedAudio.url, cachedAudio.type, text, voiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
       return;
@@ -314,8 +406,9 @@
 
     currentTtsMessageKey = messageKey;
     currentTtsLoading = true;
-    ttsAbortController = new AbortController();
-    const signal = ttsAbortController.signal;
+    const controller = new AbortController();
+    ttsAbortController = controller;
+    const signal = controller.signal;
 
     console.log(`请求 Minimax T2A v2... VoiceID: ${voiceId}, Language: ${ttsLanguage}`);
     if (button) button.style.display = 'none';
@@ -399,6 +492,7 @@
       }
 
       const data = await response.json();
+      if (signal.aborted || generation !== chatTtsGeneration) return;
 
       // 4. 检查业务状态码
       if (data.base_resp && data.base_resp.status_code !== 0) {
@@ -414,26 +508,40 @@
         type: 'audio/mpeg'
       });
       const audioUrl = URL.createObjectURL(audioBlob);
+      revokeChatTtsUrl();
+      currentChatTtsObjectUrl = audioUrl;
 
-      await playAudioFromData(audioUrl, 'audio/mpeg', text, voiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
+      await playAudioFromData(audioUrl, 'audio/mpeg', text, voiceId, bodyElement, messageKey, () => {
+        currentTtsMessageKey = '';
+        revokeChatTtsUrl();
+      });
 
-      // 写入缓存
+      // 写入仅用于加速重复播放的临时缓存；旧项按插入顺序淘汰，不影响持久化消息。
+      if (activeTtsCacheReader) {
+        try { activeTtsCacheReader.abort(); } catch (error) { }
+      }
       const reader = new FileReader();
+      activeTtsCacheReader = reader;
       reader.onloadend = function () {
+        if (activeTtsCacheReader === reader) activeTtsCacheReader = null;
+        if (reader.error || generation !== chatTtsGeneration || typeof reader.result !== 'string') return;
         state.ttsCache.set(cacheKey, {
           url: reader.result,
           type: 'audio/mpeg'
         });
+        trimTtsCache();
       }
       reader.readAsDataURL(audioBlob);
 
     } catch (error) {
       if (error.name === 'AbortError') return;
+      if (generation !== chatTtsGeneration) return;
+      if (generation === chatTtsGeneration) revokeChatTtsUrl();
       console.error("TTS 生成失败:", error);
       await showCustomAlert("语音生成失败", `错误: ${error.message}`);
     } finally {
-      currentTtsLoading = false;
-      ttsAbortController = null;
+      if (generation === chatTtsGeneration) currentTtsLoading = false;
+      if (ttsAbortController === controller) ttsAbortController = null;
       spinner.style.display = 'none';
       if (button) button.style.display = 'flex';
     }
@@ -495,21 +603,18 @@
       const originalContent = bodyElement.dataset.originalContent;
       
       if (originalContent) {
-        // 有双语内容：显示外语 + 中文翻译
+        // 有双语内容：显示角色原文与目标译文。
         const decodedOriginal = decodeURIComponent(originalContent);
-        
-        // 提取外语部分（去掉〖〗中的内容）
-        const foreignText = decodedOriginal.replace(/[〖【][^〗】]*[〗】]/g, '').trim();
-        
-        // 提取中文翻译
-        const translationMatches = decodedOriginal.match(/[〖【]\s*([^〗】]+?)\s*[〗】]/g);
-        let translation = '';
-        if (translationMatches && translationMatches.length > 0) {
-          translation = translationMatches
-            .map(m => m.replace(/[〖【〗】]/g, '').trim())
-            .filter(t => t.length > 0)
-            .join(' ');
-        }
+        const languageParts = window.languagePolicy
+          ? window.languagePolicy.splitContent(decodedOriginal)
+          : null;
+        const foreignText = languageParts
+          ? languageParts.sourceText
+          : decodedOriginal.replace(/[〖【][^〗】]*[〗】]/g, '').trim();
+        const translationMatches = languageParts ? null : decodedOriginal.match(/[〖【]\s*([^〗】]+?)\s*[〗】]/g);
+        const translation = languageParts
+          ? languageParts.translationText
+          : (translationMatches || []).map(m => m.replace(/[〖【〗】]/g, '').trim()).filter(Boolean).join(' ');
         
         // 构建显示内容：外语 + 换行 + 中文翻译
         if (translation) {
@@ -621,11 +726,12 @@
       return bubble.dataset.cachedTranslation;
     }
     
-    // 【调试日志】
-    console.log('[双语调试] 原始内容:', content);
-    console.log('[双语调试] 内容长度:', content.length);
-    console.log('[双语调试] 包含〖:', content.includes('〖'));
-    console.log('[双语调试] 包含〗:', content.includes('〗'));
+    if (window.languagePolicy) {
+      const translation = window.languagePolicy.splitContent(content).translationText;
+      if (!translation) return null;
+      bubble.dataset.cachedTranslation = translation;
+      return translation;
+    }
     
     // 【预处理】清理可能的隐藏字符和统一符号
     let cleanedContent = content
@@ -670,3 +776,23 @@
   window.playTtsAudio = playTtsAudio;
   window.playRealAudio = playRealAudio;
   window.playSilentAudio = playSilentAudio;
+  window.stopSilentAudio = stopSilentAudio;
+  window.stopTtsQueue = stopTtsQueue;
+  window.stopChatMessageTtsOnly = stopChatMessageTtsOnly;
+  window.stopAllTtsPlayback = stopAllTtsPlayback;
+  window.playVideoCallPureTTS = playVideoCallPureTTS;
+  window.toggleVoiceTranscript = toggleVoiceTranscript;
+  window.toggleBilingualTranslation = toggleBilingualTranslation;
+
+  window.addEventListener('pagehide', event => {
+    if (event.persisted) return;
+    stopAllTtsPlayback();
+    stopSilentAudio();
+    const realAudioPlayer = document.getElementById('real-audio-player');
+    if (realAudioPlayer) {
+      realAudioPlayer.pause();
+      realAudioPlayer.removeAttribute('src');
+      delete realAudioPlayer.dataset.currentAudio;
+      try { realAudioPlayer.load(); } catch (error) { }
+    }
+  });

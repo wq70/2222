@@ -161,7 +161,7 @@
 
         const postImageUrl = state.globalSettings.enableAiDrawing && targetPost.image_prompt ? getPollinationsImageUrl(targetPost.image_prompt) : 'https://i.postimg.cc/KYr2qRCK/1.jpg';
         innerContentHtml = publicTextHtml ? `${publicTextHtml}<div style="margin-top:10px;"><img src="${postImageUrl}" class="chat-image" style="cursor: pointer;" data-hidden-text="${targetPost.hiddenContent}"></div>` : `<img src="${postImageUrl}" class="chat-image" style="cursor: pointer;" data-hidden-text="${targetPost.hiddenContent}">`;
-      } else if (targetPost.type === 'naiimag' || targetPost.type === 'googleimag') {
+      } else if (targetPost.type === 'naiimag' || targetPost.type === 'googleimag' || targetPost.type === 'openaiimag') {
 
         const imageUrls = targetPost.imageUrls || (targetPost.imageUrl ? [targetPost.imageUrl] : []);
 
@@ -172,7 +172,7 @@
           // 使用统一的多图布局（包括单张图片）
           imagesHtml = `<div class="post-images-grid grid-${imageCount}">`;
           imageUrls.forEach((url, index) => {
-            imagesHtml += `<img src="${url}" class="naiimag-image" alt="图片${index + 1}" loading="lazy" onerror="this.src='https://i.postimg.cc/KYr2qRCK/1.jpg'; this.alt='图片加载失败';">`;
+            imagesHtml += `<img src="${escapeHTML(url || '')}" class="naiimag-image" alt="图片${index + 1}" loading="lazy" onerror="this.src='https://i.postimg.cc/KYr2qRCK/1.jpg'; this.alt='图片加载失败';">`;
           });
           imagesHtml += '</div>';
 
@@ -290,7 +290,13 @@
                         <span class="post-nickname">${authorNickname}</span>
                         <span class="post-timestamp">${formatPostTimestamp(post.timestamp)}</span>
                     </div>
-                    <div class="post-actions-btn">…</div>
+                    <div class="post-actions-btn" title="更多操作">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="5" cy="12" r="2"></circle>
+                        <circle cx="12" cy="12" r="2"></circle>
+                        <circle cx="19" cy="12" r="2"></circle>
+                      </svg>
+                    </div>
                 </div>
                 ${mainContentHtml}
                 <div class="post-feedback-icons">

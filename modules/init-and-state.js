@@ -14,7 +14,13 @@
 //   - init-features.js（功能模块后半段）
 // ============================================================
 
-document.addEventListener('DOMContentLoaded', () => {
+// 参考并改写自 yxlforever/YYY：
+// https://github.com/yxlforever/YYY/commit/ece2d6bec633ced55c89af3871f96c97ebf3aa7e
+// 用途：防止 PWA 恢复或脚本重复执行时再次初始化整套功能与事件。
+// 不改变任何现有入口、配置、数据读取或用户操作行为。
+if (!window.__appBootstrapStarted) {
+  window.__appBootstrapStarted = true;
+  document.addEventListener('DOMContentLoaded', () => {
 
   // ========================================
   // References to globals from split files
@@ -120,6 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
       customChatPromptGroup: '',           // 自定义群聊提示词内容
       customChatPromptOffline: '',         // 自定义线下模式提示词内容
       customChatPromptGroupOffline: '',    // 自定义群聊线下模式提示词内容
+      customPromptCollections: null,       // 条目式提示词；为空时继续读取上述旧字符串
       enableQzoneActions: false,          // 新增：全局动态开关，默认关闭
       enableViewMyPhone: false,           // 新增：全局查看User手机开关，默认关闭
       enableCrossChat: true,              // 新增：全局跨聊天消息开关（群聊↔私聊），默认开启
@@ -152,6 +159,8 @@ document.addEventListener('DOMContentLoaded', () => {
       notificationVolume: 1.0, // 消息提示音音量 (0.0-1.0)
       soundPresets: [], // 消息提示音预设列表
       widgetData: {},
+      homeLayoutMode: 'classic',
+      freeHomeLayout: null,
       globalChatBackground: '',
       enableAiDrawing: true,
       showPhoneFrame: false,
@@ -229,9 +238,45 @@ document.addEventListener('DOMContentLoaded', () => {
       ...(state.globalSettings.myphoneAppIcons || {})
     };
 
+    // 仅迁移明确的官方旧默认图标。其他 URL/Base64 均属于用户自定义内容，必须保留。
+    const appIconDefaultsMigrationVersion = 1;
+    const savedAppIconDefaultsMigrationVersion = Number(state.globalSettings.appIconDefaultsMigrationVersion) || 0;
+    if (savedAppIconDefaultsMigrationVersion < appIconDefaultsMigrationVersion) {
+      const legacyDefaultAppIcons = {
+        'char-phone': new Set([
+          'https://i.postimg.cc/pXj9h20L/IMG-7275.jpg'
+        ]),
+        'douban': new Set([
+          'https://i.postimg.cc/Pq2xJN1g/IMG-7301.jpg'
+        ])
+      };
+
+      Object.entries(legacyDefaultAppIcons).forEach(([iconId, legacyDefaults]) => {
+        const savedIcon = state.globalSettings.appIcons[iconId];
+        if (legacyDefaults.has(savedIcon)) {
+          state.globalSettings.appIcons[iconId] = defaultGlobalSettings.appIcons[iconId];
+        }
+      });
+
+      state.globalSettings.appIconDefaultsMigrationVersion = appIconDefaultsMigrationVersion;
+      db.globalSettings.put(state.globalSettings).catch(console.error);
+    }
+
+    // 启动阶段会多次按 id 关联群成员；建立只读索引，避免角色较多时反复全表扫描。
+    const startupChatById = new Map();
+    chatsArr.forEach(chat => {
+      if (chat && !startupChatById.has(chat.id)) startupChatById.set(chat.id, chat);
+    });
+
     chatsArr.forEach(chat => {
       if (!chat) return;
       if (!chat.settings) chat.settings = {};
+      if (!chat.isGroup && window.CharacterBond) {
+        window.CharacterBond.ensureChat(chat);
+      } else if (!chat.isGroup) {
+        if (typeof chat.settings.enableCharacterSpark !== 'boolean') chat.settings.enableCharacterSpark = false;
+        if (typeof chat.settings.enableSharedPet !== 'boolean') chat.settings.enableSharedPet = false;
+      }
       if (typeof chat.settings.enableTimePerception === 'undefined') {
         chat.settings.enableTimePerception = true;
       }
@@ -308,13 +353,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (chat.isGroup && chat.members) {
         let needsUpdate = false;
-        chatsArr.forEach(c => {
-          if (c.id === chat.id && c.originalName) {
-            delete c.originalName;
-          }
-        });
+        if (chat.originalName) delete chat.originalName;
         chat.members.forEach(member => {
-          const originalCharacter = chatsArr.find(c => c.id === member.id);
+          const originalCharacter = startupChatById.get(member.id);
           if (originalCharacter && originalCharacter.settings) {
             const correctAvatar = originalCharacter.settings.aiAvatar;
             if (correctAvatar && member.avatar !== correctAvatar) {
@@ -430,14 +471,26 @@ document.addEventListener('DOMContentLoaded', () => {
       return acc;
     }, {});
     const memoriesToUpdate = [];
+    // 启动兼容迁移仍保持“本名优先、现名兜底”的原规则，但避免每条记忆反复扫描全部角色。
+    const chatByOriginalName = new Map();
+    const chatByCurrentName = new Map();
+    chatsArr.forEach(chat => {
+      if (!chat || chat.isGroup) return;
+      if (chat.originalName && !chatByOriginalName.has(chat.originalName)) {
+        chatByOriginalName.set(chat.originalName, chat);
+      }
+      if (chat.name && !chatByCurrentName.has(chat.name)) {
+        chatByCurrentName.set(chat.name, chat);
+      }
+    });
     allMemories.forEach(memory => {
       if (memory.type === 'ai_generated' && memory.authorName && !memory.authorId) {
-        const foundChat = chatsArr.find(c => !c.isGroup && c.originalName === memory.authorName);
+        const foundChat = chatByOriginalName.get(memory.authorName);
         if (foundChat) {
           memory.authorId = foundChat.id;
           memoriesToUpdate.push(memory);
         } else {
-          const fallbackChat = chatsArr.find(c => !c.isGroup && c.name === memory.authorName);
+          const fallbackChat = chatByCurrentName.get(memory.authorName);
           if (fallbackChat) {
             memory.authorId = fallbackChat.id;
             memoriesToUpdate.push(memory);
@@ -547,6 +600,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function init() {
 
+    if (window.__appInitCompleted || window.__appInitInProgress) return;
+    window.__appInitInProgress = true;
+
+    try {
+
     // ==================== Event Bindings A (from init-event-bindingsA.js) ====================
     await window.initEventBindingsA(state, db);
 
@@ -556,6 +614,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ==================== Features (from init-features.js) ====================
     window.initFeatures(state, db);
+    if (window.FreeHomeLayout) await window.FreeHomeLayout.init(state, db);
 
     initLockScreen();
     checkForUpdates();
@@ -564,6 +623,9 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeBackgroundKeepAlive();
     bindBackgroundKeepAliveEvents();
     loadBackgroundKeepAliveSettings();
+    if (window.ReplyGuardian && typeof window.ReplyGuardian.init === 'function') {
+      await window.ReplyGuardian.init();
+    }
     loadShoppingCart(); // 加载购物车数据
     
     // 初始化悬浮球
@@ -572,8 +634,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     showScreen('home-screen');
+    window.__appInitCompleted = true;
+    } finally {
+      window.__appInitInProgress = false;
+    }
   }
 
   init();
 
-});
+  });
+}

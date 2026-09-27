@@ -45,6 +45,10 @@
           triggerAiFriendApplication(chat.id);
         }
       } else if (chat.relationship?.status === 'friend' && chat.id !== state.activeChatId) {
+        if (window.TimeAwareness?.isBackgroundPaused(chat)) {
+          console.log(`角色 "${chat.name}" 的后台活动已被时间感知暂停设置暂停。`);
+          return;
+        }
         if (chat.settings.enableBackgroundActivity === false) {
           console.log(`角色 "${chat.name}" 的独立后台活动开关已关闭，本次跳过。`);
           return;
@@ -65,6 +69,10 @@
 
     const allGroupChats = Object.values(state.chats).filter(chat => chat.isGroup);
     allGroupChats.forEach(chat => {
+      if (window.TimeAwareness?.isBackgroundPaused(chat)) {
+        console.log(`群聊 "${chat.name}" 的后台活动已被时间感知暂停设置暂停。`);
+        return;
+      }
       if (chat.settings.enableBackgroundActivity === false) {
         console.log(`群聊 "${chat.name}" 的后台活动开关已关闭，本次跳过。`);
         return;
@@ -374,6 +382,7 @@ ${tasksString}
   let smartKeepAliveWorker = null; // 用于无声智能保活的 Web Worker
   let smartKeepAliveWakeLock = null; // 用于无声智能保活的 WakeLock
   let smartKeepAliveEnabled = false;
+  let backgroundKeepAliveEventsBound = false;
 
   // 初始化后台保活
   async function initializeBackgroundKeepAlive() {
@@ -393,6 +402,10 @@ ${tasksString}
 
   // 启动无声智能保活
   async function startSmartKeepAlive() {
+    // 参考并改写自 yxlforever/YYY：
+    // https://github.com/yxlforever/YYY/commit/ece2d6bec633ced55c89af3871f96c97ebf3aa7e
+    // 用途：防止重复启动时叠加 Worker、WakeLock 与生命周期监听；保留两种保活开关及原行为。
+    if (smartKeepAliveEnabled) return;
     console.log('[无声保活] 启动无声智能保活...');
     smartKeepAliveEnabled = true;
     
@@ -424,7 +437,9 @@ ${tasksString}
         });
       `;
       const blob = new Blob([workerCode], { type: 'application/javascript' });
-      smartKeepAliveWorker = new Worker(URL.createObjectURL(blob));
+      const workerUrl = URL.createObjectURL(blob);
+      smartKeepAliveWorker = new Worker(workerUrl);
+      URL.revokeObjectURL(workerUrl);
       smartKeepAliveWorker.onmessage = (e) => {
         if (e.data === 'tick' && smartKeepAliveEnabled) {
           // 在此保持主线程略微活跃
@@ -554,6 +569,7 @@ ${tasksString}
           URL.revokeObjectURL(oldSrc);
         }
         keepAliveAudioPlayer = null;
+        if (window.ReplyGuardianAudio) window.ReplyGuardianAudio.clearMediaSession();
         console.log('[后台保活] 保活音频已停止');
       } catch (error) {
         console.warn('[后台保活] 停止保活音频失败:', error);
@@ -617,6 +633,8 @@ ${tasksString}
 
   // 绑定后台保活开关事件
   function bindBackgroundKeepAliveEvents() {
+    if (backgroundKeepAliveEventsBound) return;
+    backgroundKeepAliveEventsBound = true;
     const smartKeepAliveSwitch = document.getElementById('smart-keep-alive-switch');
     const keepAliveSwitch = document.getElementById('background-keep-alive-switch');
     const statusDiv = document.getElementById('keep-alive-status');
@@ -629,6 +647,8 @@ ${tasksString}
     const audioUrl = document.getElementById('keep-alive-audio-url');
     const audioLoadUrl = document.getElementById('keep-alive-audio-load-url');
     const audioPlayer = document.getElementById('keep-alive-audio-player');
+    const audioDefault = document.getElementById('keep-alive-audio-default');
+    const audioTest = document.getElementById('keep-alive-audio-test');
 
     if (smartKeepAliveSwitch) {
       smartKeepAliveSwitch.addEventListener('change', async (e) => {
@@ -647,6 +667,27 @@ ${tasksString}
     if (keepAliveSwitch) {
       keepAliveSwitch.addEventListener('change', async (e) => {
         const enabled = e.target.checked;
+        // iOS/Safari 会在首次异步等待后收回用户激活权限，因此要在开关点击的
+        // 同一个事件栈内先尝试启动媒体。后续仍会恢复用户保存的音频来源。
+        if (enabled && audioPlayer) {
+          const savedUrl = state.globalSettings.backgroundKeepAlive.audioUrl;
+          if (savedUrl) {
+            audioPlayer.src = savedUrl;
+            audioPlayer.loop = true;
+            audioPlayer.play().then(() => {
+              keepAliveAudioPlayer = audioPlayer;
+              if (window.ReplyGuardianAudio) window.ReplyGuardianAudio.noteUrl(savedUrl);
+            }).catch(error => {
+              console.warn('[后台保活] 用户手势内启动URL音频失败:', error);
+            });
+          } else if (window.ReplyGuardianAudio) {
+            window.ReplyGuardianAudio.useBuiltIn(audioPlayer).then(() => {
+              keepAliveAudioPlayer = audioPlayer;
+            }).catch(error => {
+              console.warn('[后台保活] 用户手势内启动内置静音失败:', error);
+            });
+          }
+        }
         state.globalSettings.backgroundKeepAlive.enabled = enabled;
         await db.globalSettings.put(state.globalSettings);
 
@@ -667,12 +708,24 @@ ${tasksString}
               ap.loop = true;
               ap.play().then(() => {
                 keepAliveAudioPlayer = ap;
+                if (window.ReplyGuardianAudio) window.ReplyGuardianAudio.noteUrl(savedUrl);
                 console.log('[后台保活] 开关开启，已恢复保存的音频URL');
               }).catch(err => {
                 console.warn('[后台保活] 恢复音频播放失败:', err);
               });
             }
             if (au) au.value = savedUrl;
+          } else if (window.ReplyGuardianAudio) {
+            const ap = document.getElementById('keep-alive-audio-player');
+            if (ap) {
+              try {
+                await window.ReplyGuardianAudio.restoreSaved(ap, true);
+                keepAliveAudioPlayer = ap;
+                console.log('[后台保活] 已启用保存的本地音频或内置离线静音');
+              } catch (error) {
+                console.warn('[后台保活] 默认音频启动失败（可能需要再次点击）:', error);
+              }
+            }
           }
         } else {
           stopBackgroundKeepAlive();
@@ -709,6 +762,7 @@ ${tasksString}
               URL.revokeObjectURL(oldSrc);
             }
             keepAliveAudioPlayer = null;
+            if (window.ReplyGuardianAudio) window.ReplyGuardianAudio.clearMediaSession();
             // 清除保存的音频URL
             if (state.globalSettings.backgroundKeepAlive) {
               delete state.globalSettings.backgroundKeepAlive.audioUrl;
@@ -735,7 +789,7 @@ ${tasksString}
 
     // 处理本地文件上传
     if (audioFile && audioPlayer) {
-      audioFile.addEventListener('change', (e) => {
+      audioFile.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (file) {
           try {
@@ -744,18 +798,25 @@ ${tasksString}
               URL.revokeObjectURL(audioPlayer.src);
             }
 
-            const fileUrl = URL.createObjectURL(file);
-            audioPlayer.src = fileUrl;
-            audioPlayer.loop = true;
-            audioPlayer.play().then(() => {
+            if (window.ReplyGuardianAudio) {
+              await window.ReplyGuardianAudio.saveCustomAudio(file, audioPlayer);
+              // 本地音频成为当前来源；保留上传能力，但不让旧 URL 在刷新后反向覆盖它。
+              delete state.globalSettings.backgroundKeepAlive.audioUrl;
+              await db.globalSettings.put(state.globalSettings);
+              if (audioUrl) audioUrl.value = '';
+              keepAliveAudioPlayer = audioPlayer;
+              console.log('[后台保活] 本地音频已保存并播放');
+            } else {
+              const fileUrl = URL.createObjectURL(file);
+              audioPlayer.src = fileUrl;
+              audioPlayer.loop = true;
+              await audioPlayer.play();
               keepAliveAudioPlayer = audioPlayer;
               console.log('[后台保活] 本地音频已加载并播放');
-            }).catch(err => {
-              console.warn('[后台保活] 音频播放失败:', err);
-            });
+            }
           } catch (error) {
             console.error('[后台保活] 加载本地音频失败:', error);
-            alert('加载音频文件失败，请重试');
+            alert(error.message || '加载音频文件失败，请重试');
           }
         }
       });
@@ -780,6 +841,7 @@ ${tasksString}
           audioPlayer.loop = true;
           audioPlayer.play().then(async () => {
             keepAliveAudioPlayer = audioPlayer;
+            if (window.ReplyGuardianAudio) window.ReplyGuardianAudio.noteUrl(url);
             console.log('[后台保活] URL音频已加载并播放');
             // 保存URL到设置中，刷新后可恢复
             state.globalSettings.backgroundKeepAlive.audioUrl = url;
@@ -792,6 +854,41 @@ ${tasksString}
         } catch (error) {
           console.error('[后台保活] 加载URL音频失败:', error);
           alert('加载音频URL失败，请检查URL是否正确');
+        }
+      });
+    }
+
+    if (audioDefault && audioPlayer) {
+      audioDefault.addEventListener('click', async () => {
+        try {
+          if (!window.ReplyGuardianAudio) throw new Error('内置音频模块未加载');
+          await window.ReplyGuardianAudio.clearCustomAndUseBuiltIn(audioPlayer);
+          keepAliveAudioPlayer = audioPlayer;
+          console.log('[后台保活] 已恢复内置离线静音');
+        } catch (error) {
+          console.warn('[后台保活] 内置音频播放失败:', error);
+          alert('内置音频播放失败，请再次点击或检查浏览器媒体权限');
+        }
+      });
+    }
+
+    if (audioTest && audioPlayer) {
+      audioTest.addEventListener('click', async () => {
+        try {
+          if (!audioPlayer.src && window.ReplyGuardianAudio) {
+            await window.ReplyGuardianAudio.restoreSaved(audioPlayer, true);
+          } else {
+            await audioPlayer.play();
+          }
+          keepAliveAudioPlayer = audioPlayer;
+          if (window.ReplyGuardianAudio) {
+            window.ReplyGuardianAudio.setSourceStatus('播放正常；可切换应用后再返回检查是否仍在播放');
+          }
+        } catch (error) {
+          console.warn('[后台保活] 测试播放失败:', error);
+          if (window.ReplyGuardianAudio) {
+            window.ReplyGuardianAudio.setSourceStatus('播放失败；请点击播放器或重新选择音频');
+          }
         }
       });
     }
@@ -834,6 +931,7 @@ ${tasksString}
             audioPlayer.loop = true;
             audioPlayer.play().then(() => {
               keepAliveAudioPlayer = audioPlayer;
+              if (window.ReplyGuardianAudio) window.ReplyGuardianAudio.noteUrl(config.audioUrl);
               console.log('[后台保活] 已恢复保存的音频URL并播放');
             }).catch(err => {
               console.warn('[后台保活] 恢复音频播放失败（可能需要用户交互）:', err);
@@ -842,6 +940,16 @@ ${tasksString}
           // 恢复URL输入框的值
           if (audioUrl) {
             audioUrl.value = config.audioUrl;
+          }
+        } else if (window.ReplyGuardianAudio) {
+          const audioPlayer = document.getElementById('keep-alive-audio-player');
+          if (audioPlayer) {
+            window.ReplyGuardianAudio.restoreSaved(audioPlayer, true).then(() => {
+              keepAliveAudioPlayer = audioPlayer;
+              console.log('[后台保活] 已恢复保存的本地音频或内置离线静音');
+            }).catch(err => {
+              console.warn('[后台保活] 自动恢复音频失败（可能需要用户交互）:', err);
+            });
           }
         }
       } else {
@@ -863,6 +971,7 @@ ${tasksString}
     const activeCharacters = Object.values(state.chats).filter(chat =>
       !chat.isGroup &&
       chat.settings.enableBackgroundActivity &&
+      !window.TimeAwareness?.isBackgroundPaused(chat) &&
       chat.relationship?.status === 'friend'
     );
 

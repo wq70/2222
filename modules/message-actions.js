@@ -31,7 +31,10 @@
                     // 点击查看深度思考
                     viewThoughtChainBtn.onclick = () => {
                         hideMessageActions();
-                        showCustomAlert('AI 深度思考', parseMarkdown(processMentions(String(prevMsg.content), chat)).replace(/\n/g, '<br>'));
+                        const safeThought = typeof ThoughtChainManager !== 'undefined'
+                            ? ThoughtChainManager.escapeHtml(String(prevMsg.content))
+                            : String(prevMsg.content).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                        showCustomAlert('AI 深度思考', parseMarkdown(processMentions(safeThought, chat)).replace(/\n/g, '<br>'));
                     };
                 }
                 break; // 无论是否隐藏，只看最近的一个，防止找太远
@@ -281,6 +284,11 @@
     } else {
       textToTranslate = String(message.content);
     }
+    if (message.languageData?.sourceText) {
+      textToTranslate = message.languageData.sourceText;
+    } else if (window.languagePolicy && chat.settings.enableBilingualMode) {
+      textToTranslate = window.languagePolicy.splitContent(textToTranslate).sourceText || textToTranslate;
+    }
 
     // 如果文本为空或太短，不翻译
     if (!textToTranslate || textToTranslate.trim().length === 0) {
@@ -299,6 +307,10 @@
 
       // 简单的语言检测
       function detectLanguage(text) {
+        // 常见繁体特征字优先于通用汉字检测。
+        if (/[體臺灣為與這個們說話學國語廣東後裡時會來麼樣]/.test(text)) {
+          return 'zh-TW';
+        }
         // 检测是否包含中文字符
         if (/[\u4e00-\u9fa5]/.test(text)) {
           return 'zh-CN';
@@ -320,10 +332,35 @@
       }
 
       const sourceLang = detectLanguage(textToSend);
-      const targetLang = 'zh-CN'; // 目标语言：简体中文
+      const hasLanguagePolicy = Boolean(chat.settings.languagePolicy && window.languagePolicy);
+      const policy = hasLanguagePolicy ? window.languagePolicy.getPolicy(chat) : null;
+      const targetMap = {
+        'zh-Hans-CN': 'zh-CN', 'zh-Hant-TW': 'zh-TW', 'zh-Hant-HK': 'zh-TW',
+        'yue-Hant-HK': 'zh-TW', 'yue-Hans-CN': 'zh-CN', 'en-US': 'en', 'en-GB': 'en',
+        'ko-KR': 'ko', 'ja-JP': 'ja', 'fr-FR': 'fr', 'de-DE': 'de', 'es-ES': 'es',
+        'es-MX': 'es', 'pt-BR': 'pt', 'pt-PT': 'pt', 'it-IT': 'it', 'ru-RU': 'ru'
+      };
+      const configuredTarget = (() => {
+        if (policy?.translationMode !== 'fixed') return 'zh-CN';
+        const raw = policy.translationLanguage || '';
+        if (targetMap[raw]) return targetMap[raw];
+        if (/简体|普通话|简中/.test(raw)) return 'zh-CN';
+        if (/繁体|繁中/.test(raw)) return 'zh-TW';
+        if (/韩语|韩文/.test(raw)) return 'ko';
+        if (/日语|日文/.test(raw)) return 'ja';
+        if (/英语|英文/.test(raw)) return 'en';
+        const languageCode = raw.match(/^[a-z]{2,3}(?:-[A-Za-z0-9]+)*/)?.[0];
+        return languageCode ? languageCode.split('-')[0] : 'zh-CN';
+      })();
+      // 没有新语言配置的旧聊天继续维持“中文转英文、其他转简中”的原行为。
+      const finalTargetLang = hasLanguagePolicy
+        ? (configuredTarget || 'zh-CN')
+        : (sourceLang === 'zh-CN' ? 'en' : 'zh-CN');
 
-      // 如果检测到已经是中文，尝试翻译成英文
-      const finalTargetLang = sourceLang === 'zh-CN' ? 'en' : 'zh-CN';
+      if (hasLanguagePolicy && policy.translationMode === 'none') {
+        await showCustomAlert('翻译未开启', '当前聊天设置为不生成翻译，可在“语言与翻译”中选择翻译语言。');
+        return;
+      }
 
       const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToSend)}&langpair=${sourceLang}|${finalTargetLang}`;
 
@@ -347,12 +384,13 @@
         'ja': '日文',
         'ko': '韩文',
         'ru': '俄文',
-        'zh-CN': '中文'
+        'zh-CN': '简体中文',
+        'zh-TW': '繁体中文'
       };
 
       await showCustomAlert(
         '翻译结果',
-        `检测语言：${langName[sourceLang] || sourceLang}\n\n原文：\n${textToSend}\n\n译文：\n${translatedText}`
+        `检测语言：${langName[sourceLang] || sourceLang}\n翻译语言：${langName[finalTargetLang] || finalTargetLang}\n\n原文：\n${textToSend}\n\n译文：\n${translatedText}`
       );
 
     } catch (err) {
@@ -537,6 +575,14 @@
         type: 'naiimag',
         prompt: '1girl, best quality, masterpiece, ...'
       },
+      googleImage: {
+        type: 'googleimag',
+        prompt: 'A detailed photorealistic scene...'
+      },
+      openAIImage: {
+        type: 'openaiimag',
+        prompt: '详细描述希望生成的画面...'
+      },
       // 【关键修改】：添加旁白模板
       narration: {
         type: 'narration',
@@ -556,6 +602,8 @@
             <button class="format-btn" data-template='${JSON.stringify(templates.offline)}'>线下</button>
             <button class="format-btn" data-template='${JSON.stringify(templates.quote)}'>引用</button>
             <button class="format-btn" data-template='${JSON.stringify(templates.nai)}' style="color: #6a329f; border-color: #6a329f;">NAI生图</button>
+            <button class="format-btn" data-template='${JSON.stringify(templates.googleImage)}'>谷歌图</button>
+            <button class="format-btn" data-template='${JSON.stringify(templates.openAIImage)}'>GPT图</button>
             <button class="format-btn" data-template='${JSON.stringify(templates.narration)}' style="color: #888; border-color: #ccc;">旁白</button>
             </div>
     `;
@@ -621,7 +669,7 @@
     }
 
 
-    else if (message.type && ['voice_message', 'ai_image', 'transfer', 'offline_text', 'share_link', 'naiimag', 'narration'].includes(message.type)) {
+    else if (message.type && ['voice_message', 'ai_image', 'transfer', 'offline_text', 'share_link', 'naiimag', 'googleimag', 'openaiimag', 'narration'].includes(message.type)) {
       let fullMessageObject = {
         type: message.type
       };
@@ -647,6 +695,10 @@
       else if (message.type === 'naiimag') {
         fullMessageObject.prompt = message.prompt;
 
+        fullMessageObject.fullPrompt = message.fullPrompt;
+      }
+      else if (message.type === 'googleimag' || message.type === 'openaiimag') {
+        fullMessageObject.prompt = message.prompt;
         fullMessageObject.fullPrompt = message.fullPrompt;
       }
       else if (message.type === 'narration') {
@@ -776,7 +828,19 @@
 
       switch (parsedResult.type) {
         case 'text':
-          newMessage.type = 'text';
+          if (originalMessage.type === 'narration' || originalMessage.role === 'system') {
+            // 原消息是旁白/系统消息时，即使输入的是纯文本，也保持为旁白
+            newMessage.type = 'narration';
+            newMessage.role = 'system';
+            newMessage.content = parsedResult.content;
+          } else {
+            newMessage.type = 'text';
+            newMessage.content = parsedResult.content;
+          }
+          break;
+        case 'narration':
+          newMessage.type = 'narration';
+          newMessage.role = 'system';
           newMessage.content = parsedResult.content;
           break;
         case 'offline_text':
@@ -896,6 +960,47 @@
           newMessage.imageUrl = googleImageUrl;
           newMessage.prompt = googlePrompt;
           newMessage.fullPrompt = googleFullPrompt;
+          break;
+        }
+
+        case 'openaiimag': {
+          const originalOpenAIMsg = chat.history[messageIndex];
+          let openAIPrompt = parsedResult.prompt || parsedResult.image_prompt || parsedResult.description;
+          let openAIImageUrl = parsedResult.imageUrl;
+          let openAIFullPrompt = parsedResult.fullPrompt;
+          let openAIModel = originalOpenAIMsg.model;
+          let openAIMimeType = originalOpenAIMsg.mimeType;
+          let openAIRequestId = originalOpenAIMsg.requestId;
+          const openAIPromptChanged = Boolean(openAIPrompt && typeof openAIPrompt === 'string' && originalOpenAIMsg.prompt !== openAIPrompt);
+
+          if (!openAIPromptChanged) {
+            openAIPrompt = originalOpenAIMsg.prompt;
+            openAIFullPrompt = originalOpenAIMsg.fullPrompt;
+            openAIImageUrl = originalOpenAIMsg.imageUrl;
+          } else {
+            await showCustomAlert('请稍候...', '检测到提示词已修改，正在重新生成 GPT 图片...');
+            try {
+              const openAIResult = await generateOpenAIImageFromPrompt(openAIPrompt);
+              openAIImageUrl = openAIResult.imageUrl;
+              openAIFullPrompt = openAIResult.fullPrompt;
+              openAIModel = openAIResult.model;
+              openAIMimeType = openAIResult.mimeType;
+              openAIRequestId = openAIResult.requestId;
+              await showCustomAlert('成功', '图片已根据新提示词重新生成！');
+            } catch (error) {
+              console.error('编辑时重新生成 GPT 图片失败:', error);
+              await showCustomAlert('生成失败', `无法重新生成图片: ${error.message}. \n\n将保留旧图片，但提示词会更新。`);
+              openAIImageUrl = originalOpenAIMsg.imageUrl;
+            }
+          }
+
+          newMessage.type = 'openaiimag';
+          newMessage.imageUrl = openAIImageUrl;
+          newMessage.prompt = openAIPrompt;
+          newMessage.fullPrompt = openAIFullPrompt;
+          newMessage.model = openAIModel;
+          newMessage.mimeType = openAIMimeType;
+          newMessage.requestId = openAIRequestId;
           break;
         }
 
@@ -1094,6 +1199,14 @@
         type: 'naiimag',
         prompt: '1girl, best quality, masterpiece, ...'
       },
+      googleImage: {
+        type: 'googleimag',
+        prompt: 'A detailed photorealistic scene...'
+      },
+      openAIImage: {
+        type: 'openaiimag',
+        prompt: '详细描述希望生成的画面...'
+      },
       narration: {
         type: 'narration',
         content: '在这里输入环境或心理描写...'
@@ -1114,6 +1227,8 @@
             <button class="format-btn" data-template='${JSON.stringify(templates.offline)}'>线下</button>
             <button class="format-btn" data-template='${JSON.stringify(templates.quote)}'>引用</button>
             <button class="format-btn" data-template='${JSON.stringify(templates.nai)}' style="color: #6a329f; border-color: #6a329f;">NAI生图</button>
+            <button class="format-btn" data-template='${JSON.stringify(templates.googleImage)}'>谷歌图</button>
+            <button class="format-btn" data-template='${JSON.stringify(templates.openAIImage)}'>GPT图</button>
             <button class="format-btn" data-template='${JSON.stringify(templates.narration)}' style="color: #888; border-color: #ccc;">旁白</button>
             
             </div>
@@ -1616,6 +1731,30 @@
             prompt: googlePrompt,
             fullPrompt: googleFullPrompt
           };
+          break;
+        }
+
+        case 'openaiimag': {
+          const openAIPrompt = msgData.prompt || msgData.image_prompt || msgData.description || 'A beautiful scene';
+          try {
+            const openAIResult = await generateOpenAIImageFromPrompt(openAIPrompt);
+            aiMessage = {
+              ...baseMessage,
+              type: 'openaiimag',
+              imageUrl: openAIResult.imageUrl,
+              prompt: openAIPrompt,
+              fullPrompt: openAIResult.fullPrompt,
+              model: openAIResult.model,
+              mimeType: openAIResult.mimeType,
+              requestId: openAIResult.requestId
+            };
+          } catch (error) {
+            console.error('❌ 导演模式 GPT 图片生成失败:', error);
+            aiMessage = {
+              ...baseMessage,
+              content: `[GPT 图片生成失败: ${error.message}]`
+            };
+          }
           break;
         }
 

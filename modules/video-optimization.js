@@ -12,6 +12,9 @@
 let cameraStream = null;
 let captureInterval = null;
 let lastCapturedImage = null;
+let cameraRequestGeneration = 0;
+let videoOptimizationInitialized = false;
+let cameraCaptureCanvas = null;
 
 // 提取对话内容（只保留引号内的文本）
 function extractDialogueOnly(text) {
@@ -81,6 +84,12 @@ window.getProcessedTTSText = function (originalText, chatId) {
 
 // 初始化视频通话优化事件监听
 function initVideoOptimization() {
+  // 参考并改写自 yxlforever/YYY：
+  // https://github.com/yxlforever/YYY/commit/ece2d6bec633ced55c89af3871f96c97ebf3aa7e
+  // 用途：避免重复绑定视频设置事件。保留原有摄像头分辨率、截图质量和所有配置行为。
+  if (videoOptimizationInitialized) return;
+  videoOptimizationInitialized = true;
+
   // 视频通话优化开关
   const enableSwitch = document.getElementById('enable-video-optimization-switch');
   const configContainer = document.getElementById('video-optimization-config-container');
@@ -345,6 +354,7 @@ window.saveVideoOptimizationSettings = function (chat) {
 
 // 应用视频通话优化到视频界面
 window.applyVideoOptimizationToCall = async function (chat) {
+  const requestGeneration = ++cameraRequestGeneration;
   const videoDisplayArea = document.getElementById('video-display-area');
   const avatarArea = document.querySelector('.video-call-avatar-area');
 
@@ -374,7 +384,7 @@ window.applyVideoOptimizationToCall = async function (chat) {
       localVideo.style.display = 'block';
 
       const facingMode = settings.useRearCamera ? 'environment' : 'user';
-      const success = await startCamera(facingMode);
+      const success = await startCamera(facingMode, requestGeneration);
       if (success) {
         // 启动定时截图
         const interval = settings.cameraInterval || 5;
@@ -395,7 +405,7 @@ window.applyVideoOptimizationToCall = async function (chat) {
 };
 
 // 启动摄像头
-async function startCamera(useFacingMode) {
+async function startCamera(useFacingMode, requestGeneration = cameraRequestGeneration) {
   try {
     const facing = useFacingMode || 'user';
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -406,6 +416,17 @@ async function startCamera(useFacingMode) {
       },
       audio: false
     });
+
+    // 参考并改写自 yxlforever/YYY 的异步摄像头失效保护（同上提交）。
+    // 用户在授权弹窗期间退出通话时，立即关闭迟到的媒体流，避免摄像头后台常驻。
+    if (requestGeneration !== cameraRequestGeneration) {
+      stream.getTracks().forEach(track => track.stop());
+      return false;
+    }
+
+    if (cameraStream && cameraStream !== stream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+    }
 
     cameraStream = stream;
     const videoElement = document.getElementById('local-camera-video');
@@ -426,6 +447,7 @@ async function startCamera(useFacingMode) {
 
 // 停止摄像头
 function stopCamera() {
+  cameraRequestGeneration++;
   if (cameraStream) {
     cameraStream.getTracks().forEach(track => track.stop());
     cameraStream = null;
@@ -439,6 +461,14 @@ function stopCamera() {
   const videoElement = document.getElementById('local-camera-video');
   if (videoElement) {
     videoElement.srcObject = null;
+  }
+
+  // 释放仅用于本次通话的截图与 canvas；不修改或删除任何已保存图片。
+  lastCapturedImage = null;
+  if (cameraCaptureCanvas) {
+    cameraCaptureCanvas.width = 1;
+    cameraCaptureCanvas.height = 1;
+    cameraCaptureCanvas = null;
   }
 
   updateCameraStatus(false, '摄像头已停止');
@@ -462,7 +492,8 @@ function captureCameraFrame() {
   const videoElement = document.getElementById('local-camera-video');
   if (!videoElement || !cameraStream) return null;
 
-  const canvas = document.createElement('canvas');
+  // 参考 yxlforever/YYY 的 canvas 复用思路；保持原分辨率与 JPEG 质量，避免改变现有识图结果。
+  const canvas = cameraCaptureCanvas || (cameraCaptureCanvas = document.createElement('canvas'));
   canvas.width = videoElement.videoWidth;
   canvas.height = videoElement.videoHeight;
 
@@ -487,6 +518,7 @@ function startCameraCapture(intervalSeconds) {
 
   // 定时截取
   captureInterval = setInterval(() => {
+    if (!cameraStream || !cameraStream.active) return;
     captureCameraFrame();
     console.log('已截取摄像头画面');
   }, intervalSeconds * 1000);
@@ -496,6 +528,14 @@ function startCameraCapture(intervalSeconds) {
 window.getLastCameraCapture = function () {
   return lastCapturedImage;
 };
+
+window.clearLastCameraCapture = function () {
+  lastCapturedImage = null;
+};
+window.stopCamera = stopCamera;
+window.addEventListener('pagehide', event => {
+  if (!event.persisted) stopCamera();
+});
 
 // 在页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function () {

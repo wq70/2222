@@ -2,7 +2,7 @@
 class UpdateNotification {
   constructor() {
     this.storageKey = 'update_notification_dismissed';
-    this.currentVersion = '0.0.34'; // 当前更新版本号
+    this.currentVersion = '9.23'; // 当前更新版本号
     this.countdownSeconds = 5;
     this.countdownInterval = null;
   }
@@ -17,31 +17,29 @@ class UpdateNotification {
   // 创建弹窗HTML
   createNotificationHTML() {
     const updateContent = `
+      <div style="margin-bottom: 15px;"><button id="update-clear-global-css-btn" style="width: 100%; padding: 10px; background: #ff4d4f; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">清除全局自定义CSS (防错位)</button></div>
       <div class="update-item important-note">新手必看：DC解答区 <a href="https://discord.com/channels/1379304008157499423/1443544486796853248" target="_blank" style="color: #4A9EFF;">点击前往</a></div>
       <div class="update-item important-note">强烈建议：安装到主屏幕以获得最佳体验</div>
       <div class="update-item important-note">注意：首次打开最好使用魔法</div>
       <div class="update-item tips">有任何问题请通过DC私信联系 <a href="https://discord.com/users/1353222930875551804" target="_blank" style="color: #4A9EFF;">点击前往</a>，其他渠道可能无法及时回复</div>
-      <div class="update-divider">本次更新内容</div>
-      <div class="update-item">1. 新增绿江可以导出TXT</div>
-      <div class="update-item">2. 删除作者追更这个功能</div>
-      <div class="update-item">3. 新增豆瓣可以选择绑定USER人设</div>
-      <div class="update-item">4. 新增豆瓣可以选择绑定世界书</div>
-      <div class="update-item">5. 优化豆瓣生成报错的功能</div>
-      <div class="update-item">6. 优化了一下豆瓣如果生图失败会恢复默认头像，新增USER可以设置自己的头像/昵称</div>
-      <div class="update-item">7. 新增豆瓣可以增量生成/新增豆瓣可以删除</div>
-      <div class="update-item">8. 新增导出记录可以为TXT和HTML，HTML主要用于观赏</div>
-      <div class="update-item">9. 新增美化没保存的时候切换或者覆盖会显示提醒弹窗</div>
-      <div class="update-item">10. 新增优化群聊双语可以选择</div>
-      <div class="update-item">11. 优化查找聊天记录过多转跳不过去的BUG，现在可以实时转跳了，点击按钮可以回到最新</div>
-      <div class="update-item" style="color: #ff4757; font-weight: bold; background: #ffeaa7; padding: 5px; border-radius: 4px; line-height: 1.4;">12. 新增思维链，感谢 <a href="https://discord.com/channels/1291925535324110879/1436589419074424882" target="_blank" style="color: #0984e3; text-decoration: underline;">老师们的指导</a>，思维链功能灵感来源1900老师，感谢授权。默认预设是330老师写在提示词里面的思维链，我提取出来做成符合当前版本的了。</div>
+      <div class="update-item important-note">使用提示：请留意 API 设置页面的小人菜单，新增功能入口都在这里哦。</div>
+      <div class="update-divider">9.23 本次更新</div>
+      <div class="update-item">1. 新增自由布局，支持自定义小组件。</div>
+      <div class="update-item">2. 补充教程 App 的内容。</div>
+      <div class="update-item">3. 修复返回按钮位置偏下、从聊天设置返回后页面渲染异常的问题。</div>
+      <div class="update-item important-note">4. 修复图标被覆盖的问题。更新后需重新设置一次，后续不会再被覆盖。</div>
+      <div class="update-item">5. 修复线下预设重复发送、API 保存失败的问题。</div>
+      <div class="update-item">6. 修复朋友圈在夜间模式下变白的问题。</div>
+      <div class="update-item">7. 修复 MCP 及类似 App 在 iOS 上的安全区适配问题。</div>
+      <div class="update-item">8. 修复联机相关问题。</div>
     `;
 
     return `
       <div id="update-notification-overlay">
         <div id="update-notification-modal">
-          <img src="https://i.postimg.cc/hGh6rJ5r/retouch-2026013121094970.png" class="update-decoration-img">
+          <img src="https://img.baibai.cv/f/mwOEhK/retouch-2026013121094970.png" class="update-decoration-img">
           <div class="update-notification-header">
-            <div class="update-title">6.27更新</div>
+            <div class="update-title">9.23 更新</div>
           </div>
           
           <div class="update-notification-body">
@@ -137,6 +135,41 @@ class UpdateNotification {
         if (!btnDontShow.disabled) {
           this.handleDontShow();
         }
+      });
+    }
+
+    // 清除全局 CSS 按钮事件
+    const clearCssBtn = document.getElementById('update-clear-global-css-btn');
+    if (clearCssBtn) {
+      clearCssBtn.addEventListener('click', () => {
+        // 1. 更新内存状态
+        if (window.state && window.state.globalSettings) {
+          window.state.globalSettings.globalCss = '';
+          // 2. 更新数据库
+          if (window.db && window.db.globalSettings) {
+            window.db.globalSettings.put({ id: 1, ...window.state.globalSettings }).catch(console.error);
+          }
+        }
+        // 3. 更新输入框（如果存在）
+        const globalCssInput = document.getElementById('global-css-input');
+        if (globalCssInput) globalCssInput.value = '';
+        // 4. 清除页面上的样式标签
+        const styleEl = document.getElementById('global-custom-style');
+        if (styleEl) styleEl.textContent = '';
+        
+        // 5. 调用 applyGlobalCss 确保应用空样式
+        if (typeof window.applyGlobalCss === 'function') {
+          window.applyGlobalCss('');
+        }
+        
+        // 6. 重新渲染聊天消息 (如果有激活的聊天)，确保气泡等恢复默认
+        if (window.state && window.state.activeChatId && typeof window.renderMessages === 'function') {
+            const chat = window.state.chats[window.state.activeChatId];
+            if (chat) window.renderMessages(chat);
+        }
+
+        clearCssBtn.textContent = '✅ 已清除全局CSS';
+        clearCssBtn.style.background = '#52c41a';
       });
     }
 

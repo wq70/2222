@@ -52,6 +52,9 @@
     // 离开聊天界面时停止聊天语音条TTS（通话TTS在独立播放器上，不受影响）
     if (currentActiveScreen && currentActiveScreen.id === 'chat-interface-screen' && screenId !== 'chat-interface-screen' && screenId !== 'voice-call-screen' && screenId !== 'video-call-screen') {
       if (typeof stopChatMessageTtsOnly === 'function') stopChatMessageTtsOnly();
+      // 配合 chat-interface.js 中参考并改写自 yxlforever/YYY 的离屏资源释放：
+      // https://github.com/yxlforever/YYY/commit/ece2d6bec633ced55c89af3871f96c97ebf3aa7e
+      if (typeof window.disposeChatMessageDom === 'function') window.disposeChatMessageDom();
     }
 
     if (screenId === 'chat-list-screen') {
@@ -62,9 +65,8 @@
     }
     if (screenId === 'api-settings-screen') {
       window.renderApiSettingsProxy();
-      if (state.globalSettings.cleanApiSettings && typeof window.openCleanApiSettings === 'function') {
-        // 整洁模式：先让原有回显完成，再构建Tab界面
-        setTimeout(() => window.openCleanApiSettings(), 50);
+      if (typeof window.applyCleanApiSettingsLayout === 'function') {
+        window.applyCleanApiSettingsLayout(state.globalSettings.cleanApiSettings);
       }
     }
     if (screenId === 'wallpaper-screen') window.renderWallpaperScreenProxy();
@@ -78,7 +80,13 @@
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     const screenToShow = document.getElementById(screenId);
     if (screenToShow) screenToShow.classList.add('active');
-    if (screenId === 'chat-interface-screen') window.updateListenTogetherIconProxy(state.activeChatId);
+    if (screenId === 'chat-interface-screen') {
+      window.updateListenTogetherIconProxy(state.activeChatId);
+      // 离开聊天时消息 DOM 已释放；从聊天设置返回后需按当前记录重新渲染。
+      if (currentActiveScreen?.id === 'chat-settings-screen' && state.activeChatId) {
+        renderChatInterface(state.activeChatId);
+      }
+    }
     if (screenId === 'font-settings-screen') {
       loadFontPresetsDropdown();
       document.getElementById('font-url-input').value = state.globalSettings.fontUrl || '';
@@ -98,6 +106,13 @@
       const fontSize = state.globalSettings.globalFontSize || 16;
       document.getElementById('font-size-slider').value = fontSize;
       document.getElementById('font-size-value').textContent = fontSize;
+      // 初始化预览开关默认关闭
+      const previewToggle = document.getElementById('font-preview-toggle');
+      const previewContainer = document.getElementById('font-preview-container');
+      if (previewToggle && previewContainer) {
+        previewToggle.checked = false;
+        previewContainer.style.display = 'none';
+      }
       // 初始化字体应用范围 UI
       const scope = state.globalSettings.fontScope || { all: true };
       const allCb = document.getElementById('font-scope-all');
@@ -157,7 +172,6 @@
 
     switch (viewId) {
       case 'qzone-screen':
-        views['qzone-screen'].style.backgroundColor = '#f0f2f5';
         updateUnreadIndicator(0);
         renderQzoneScreen();
         renderQzonePosts();
@@ -376,7 +390,13 @@
   function createChatListItem(chat) {
 
     try {
-      const lastMsgObj = chat.history.filter(msg => !msg.isHidden).slice(-1)[0] || {};
+      let lastMsgObj = {};
+      for (let index = chat.history.length - 1; index >= 0; index--) {
+        if (!chat.history[index].isHidden) {
+          lastMsgObj = chat.history[index];
+          break;
+        }
+      }
       let lastMsgDisplay;
 
       if (!chat.isGroup && chat.relationship?.status === 'pending_user_approval') {
@@ -388,7 +408,7 @@
           lastMsgDisplay = `[系统消息] ${lastMsgObj.content}`;
         } else if (lastMsgObj.type === 'transfer') {
           lastMsgDisplay = '[转账]';
-        } else if (lastMsgObj.type === 'ai_image' || lastMsgObj.type === 'user_photo' || lastMsgObj.type === 'naiimag' || lastMsgObj.type === 'googleimag') {
+        } else if (lastMsgObj.type === 'ai_image' || lastMsgObj.type === 'user_photo' || lastMsgObj.type === 'naiimag' || lastMsgObj.type === 'googleimag' || lastMsgObj.type === 'openaiimag') {
           lastMsgDisplay = '[照片]';
         } else if (lastMsgObj.type === 'voice_message') {
           lastMsgDisplay = '[语音]';
@@ -441,6 +461,8 @@
             </div>
         `;
 
+      if (window.CharacterBond) window.CharacterBond.decorateChatListItem(item, chat);
+
       const unreadCount = chat.unreadCount || 0;
       const unreadEl = item.querySelector('.unread-count');
       if (unreadCount > 0) {
@@ -460,10 +482,11 @@
         });
       }
 
-      const infoEl = item.querySelector('.info');
-      if (infoEl) {
-        infoEl.addEventListener('click', () => openChat(chat.id));
-      }
+      // 点击聊天列表项进入聊天
+      item.addEventListener('click', (e) => {
+        // 如果点击在头像上双击区域，避免阻碍
+        openChat(chat.id);
+      });
 
       addLongPressListener(item, async (e) => {
         const action = await showChatListActions(chat);
