@@ -8,8 +8,9 @@ const assetManifestPath = path.join(projectRoot, 'asset-manifest.json');
 const fragmentManifestPath = path.join(projectRoot, 'html-fragments.json');
 const scriptManifestPath = path.join(projectRoot, 'modules', 'bootstrap', 'html-fragment-manifest.js');
 const generatedFragmentDirectory = path.join(projectRoot, 'generated', 'html-fragments');
-const feedbackAssetRevision = 'feedback-20260929';
-const layoutAssetRevision = 'release-20260929';
+const feedbackAssetRevision = 'feedback-20260930-workbench';
+const layoutAssetRevision = '20261002-release';
+const fontAssetRevision = 'fonts-20261001';
 
 const fragments = [
   'document-head.html',
@@ -48,10 +49,13 @@ const fragmentScriptPaths = fragmentScripts.map(fragment => {
   const path = `generated/html-fragments/${fragment.outputName}`;
   if (fragment.outputName === 'document-head.js') return `${path}?v=${layoutAssetRevision}`;
   if (fragment.outputName === 'api-settings-data.js') return `${path}?v=${feedbackAssetRevision}`;
+  if (fragment.outputName === 'appearance-and-thoughts.js') return `${path}?v=${fontAssetRevision}`;
   return path;
 });
 
 const embeddedAssets = [
+  'update-log.html',
+  'modules/rendering-rule-worker.js',
   'archive/330--main/index.html',
   'tutorial.html'
 ];
